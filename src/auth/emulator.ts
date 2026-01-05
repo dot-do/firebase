@@ -16,6 +16,7 @@ import {
 } from './identity-toolkit.js'
 
 const PORT = process.env.FIREBASE_AUTH_EMULATOR_PORT || 9099
+const MAX_BODY_SIZE = 1048576 // 1MB
 
 function createError(message: string, code: number = 400): IdentityToolkitError {
   return {
@@ -33,10 +34,18 @@ function createError(message: string, code: number = 400): IdentityToolkitError 
   }
 }
 
-async function parseBody(req: http.IncomingMessage): Promise<any> {
+async function parseBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let body = ''
-    req.on('data', (chunk) => {
+    let size = 0
+
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (size > MAX_BODY_SIZE) {
+        req.destroy()
+        reject(new Error('PAYLOAD_TOO_LARGE'))
+        return
+      }
       body += chunk.toString()
     })
     req.on('end', () => {
@@ -151,6 +160,19 @@ async function handleRequest(
       404
     )
   } catch (error) {
+    if (error instanceof Error && error.message === 'PAYLOAD_TOO_LARGE') {
+      sendResponse(
+        res,
+        {
+          error: {
+            code: 413,
+            message: 'Payload Too Large',
+          },
+        },
+        413
+      )
+      return
+    }
     console.error('Error handling request:', error)
     sendResponse(
       res,

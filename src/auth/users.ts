@@ -1,5 +1,4 @@
-import { webcrypto } from 'crypto'
-import { pbkdf2Sync } from 'crypto'
+import { webcrypto, pbkdf2Sync, timingSafeEqual } from 'crypto'
 
 export interface UserRecord {
   localId: string
@@ -48,7 +47,7 @@ export function hashPassword(password: string, salt?: string): { hash: string; s
 
 export function verifyPassword(password: string, hash: string, salt: string): boolean {
   const { hash: computedHash } = hashPassword(password, salt)
-  return computedHash === hash
+  return timingSafeEqual(Buffer.from(computedHash), Buffer.from(hash))
 }
 
 export function isValidEmail(email: string): boolean {

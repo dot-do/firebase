@@ -631,6 +631,7 @@ class ExpressionParser {
 // ============================================================================
 
 export class RulesEvaluator {
+  private static readonly MAX_RECURSION_DEPTH = 100
   private documentStore: Map<string, ResourceContext | null> = new Map()
 
   constructor() {
@@ -724,16 +725,20 @@ export class RulesEvaluator {
   /**
    * Evaluates an AST node in the given context
    */
-  private evaluateNode(node: ExpressionNode, context: EvaluatorContext): unknown {
+  private evaluateNode(node: ExpressionNode, context: EvaluatorContext, depth: number = 0): unknown {
+    if (depth > RulesEvaluator.MAX_RECURSION_DEPTH) {
+      throw new EvaluationError('Maximum recursion depth exceeded in rules evaluation')
+    }
+
     switch (node.type) {
       case 'BinaryExpression':
-        return this.evaluateBinaryExpression(node, context)
+        return this.evaluateBinaryExpression(node, context, depth + 1)
       case 'UnaryExpression':
-        return this.evaluateUnaryExpression(node, context)
+        return this.evaluateUnaryExpression(node, context, depth + 1)
       case 'MemberExpression':
-        return this.evaluateMemberExpression(node, context)
+        return this.evaluateMemberExpression(node, context, depth + 1)
       case 'CallExpression':
-        return this.evaluateCallExpression(node, context)
+        return this.evaluateCallExpression(node, context, depth + 1)
       case 'Identifier':
         return this.evaluateIdentifier(node, context)
       case 'StringLiteral':
@@ -745,7 +750,7 @@ export class RulesEvaluator {
       case 'NullLiteral':
         return null
       case 'ArrayLiteral':
-        return node.elements.map(el => this.evaluateNode(el, context))
+        return node.elements.map(el => this.evaluateNode(el, context, depth + 1))
       default:
         throw new EvaluationError(`Unsupported node type: ${(node as any).type}`)
     }
@@ -754,31 +759,31 @@ export class RulesEvaluator {
   /**
    * Evaluates a binary expression with short-circuit evaluation for && and ||
    */
-  private evaluateBinaryExpression(node: BinaryExpressionNode, context: EvaluatorContext): unknown {
+  private evaluateBinaryExpression(node: BinaryExpressionNode, context: EvaluatorContext, depth: number): unknown {
     const { operator, left, right } = node
 
     // Short-circuit evaluation for logical operators
     if (operator === '&&') {
-      const leftValue = this.evaluateNode(left, context)
+      const leftValue = this.evaluateNode(left, context, depth)
       if (!this.isTruthy(leftValue)) {
         return false
       }
-      const rightValue = this.evaluateNode(right, context)
+      const rightValue = this.evaluateNode(right, context, depth)
       return this.isTruthy(rightValue)
     }
 
     if (operator === '||') {
-      const leftValue = this.evaluateNode(left, context)
+      const leftValue = this.evaluateNode(left, context, depth)
       if (this.isTruthy(leftValue)) {
         return true
       }
-      const rightValue = this.evaluateNode(right, context)
+      const rightValue = this.evaluateNode(right, context, depth)
       return this.isTruthy(rightValue)
     }
 
     // Evaluate both operands for other operators
-    const leftValue = this.evaluateNode(left, context)
-    const rightValue = this.evaluateNode(right, context)
+    const leftValue = this.evaluateNode(left, context, depth)
+    const rightValue = this.evaluateNode(right, context, depth)
 
     switch (operator) {
       case '==':
@@ -816,8 +821,8 @@ export class RulesEvaluator {
   /**
    * Evaluates a unary expression
    */
-  private evaluateUnaryExpression(node: UnaryExpressionNode, context: EvaluatorContext): unknown {
-    const value = this.evaluateNode(node.argument, context)
+  private evaluateUnaryExpression(node: UnaryExpressionNode, context: EvaluatorContext, depth: number): unknown {
+    const value = this.evaluateNode(node.argument, context, depth)
 
     switch (node.operator) {
       case '!':
@@ -832,8 +837,8 @@ export class RulesEvaluator {
   /**
    * Evaluates a member expression (e.g., request.auth.uid)
    */
-  private evaluateMemberExpression(node: MemberExpressionNode, context: EvaluatorContext): unknown {
-    const object = this.evaluateNode(node.object, context)
+  private evaluateMemberExpression(node: MemberExpressionNode, context: EvaluatorContext, depth: number): unknown {
+    const object = this.evaluateNode(node.object, context, depth)
 
     // Null safety: if object is null or undefined, return null
     if (object === null || object === undefined) {
@@ -844,7 +849,7 @@ export class RulesEvaluator {
     let propertyName: string | number
     if (node.computed) {
       // Computed property like obj[expr]
-      propertyName = this.evaluateNode(node.property, context) as string | number
+      propertyName = this.evaluateNode(node.property, context, depth) as string | number
     } else {
       // Dot notation like obj.prop
       if (node.property.type !== 'Identifier') {
@@ -863,15 +868,15 @@ export class RulesEvaluator {
   /**
    * Evaluates a call expression (function call)
    */
-  private evaluateCallExpression(node: CallExpressionNode, context: EvaluatorContext): unknown {
+  private evaluateCallExpression(node: CallExpressionNode, context: EvaluatorContext, depth: number): unknown {
     // Check if this is a method call (member expression callee)
     if (node.callee.type === 'MemberExpression') {
-      const object = this.evaluateNode(node.callee.object, context)
+      const object = this.evaluateNode(node.callee.object, context, depth)
       const methodName =
-        node.callee.property.type === 'Identifier' ? node.callee.property.name : String(this.evaluateNode(node.callee.property, context))
+        node.callee.property.type === 'Identifier' ? node.callee.property.name : String(this.evaluateNode(node.callee.property, context, depth))
 
       // Evaluate arguments
-      const args = node.arguments.map(arg => this.evaluateNode(arg, context))
+      const args = node.arguments.map(arg => this.evaluateNode(arg, context, depth))
 
       return this.callMethod(object, methodName, args, context)
     }
@@ -879,7 +884,7 @@ export class RulesEvaluator {
     // Check if this is a builtin function call
     if (node.callee.type === 'Identifier') {
       const functionName = node.callee.name
-      const args = node.arguments.map(arg => this.evaluateNode(arg, context))
+      const args = node.arguments.map(arg => this.evaluateNode(arg, context, depth))
 
       return this.callBuiltin(functionName, args, context)
     }

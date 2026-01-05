@@ -1471,5 +1471,68 @@ describe('Firestore Security Rules Expression Evaluator', () => {
       expect(evaluator.evaluate("resource.data.items[0] == 'first'", context)).toBe(true)
       expect(evaluator.evaluate("resource.data.items[2] == 'third'", context)).toBe(true)
     })
+
+    it('should throw error when maximum recursion depth is exceeded', () => {
+      const context: EvaluatorContext = {
+        request: {
+          auth: null,
+          resource: { data: {} },
+          method: 'get',
+          path: '/databases/default/documents/posts/123',
+          time: new Date(),
+        },
+        resource: {
+          data: {
+            a: true,
+          },
+          id: '123',
+          __name__: 'posts/123',
+        },
+        database: 'default',
+      }
+
+      // Create a deeply nested binary expression that exceeds the recursion limit
+      // Each && operator adds depth during evaluation
+      // MAX_RECURSION_DEPTH is 100, so we need more than 100 nested operators
+      let deepExpression = 'true'
+      for (let i = 0; i < 150; i++) {
+        deepExpression = `${deepExpression} && true`
+      }
+
+      expect(() => evaluator.evaluate(deepExpression, context)).toThrow(
+        'Maximum recursion depth exceeded in rules evaluation'
+      )
+    })
+
+    it('should allow expressions within recursion depth limit', () => {
+      const context: EvaluatorContext = {
+        request: {
+          auth: null,
+          resource: { data: {} },
+          method: 'get',
+          path: '/databases/default/documents/posts/123',
+          time: new Date(),
+        },
+        resource: {
+          data: {
+            a: true,
+          },
+          id: '123',
+          __name__: 'posts/123',
+        },
+        database: 'default',
+      }
+
+      // Create a nested expression within the limit
+      // 50 levels should be well within the 100 depth limit
+      let nestedExpression = 'true'
+      for (let i = 0; i < 50; i++) {
+        nestedExpression = `${nestedExpression} && true`
+      }
+
+      // Should not throw
+      expect(() => evaluator.evaluate(nestedExpression, context)).not.toThrow()
+      expect(evaluator.evaluate(nestedExpression, context)).toBe(true)
+    })
   })
 })
