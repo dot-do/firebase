@@ -36,6 +36,10 @@ export interface CallableAuthContext {
 
 export interface CallableContext {
   auth: CallableAuthContext | null
+  /** Unique instance ID for this function invocation */
+  instanceId: string
+  /** The raw request object for advanced use cases */
+  rawRequest: CallableRequest
 }
 
 export type CallableFunction = (data: unknown, context: CallableContext) => Promise<unknown> | unknown
@@ -80,6 +84,17 @@ const functionRegistry = new Map<string, CallableFunction>()
 
 // Maximum payload size (10MB)
 const MAX_PAYLOAD_SIZE = 10 * 1024 * 1024
+
+/**
+ * Generate a unique instance ID for function invocations
+ *
+ * Uses a combination of timestamp and random string for uniqueness
+ */
+function generateInstanceId(): string {
+  const timestamp = Date.now().toString(36)
+  const random = Math.random().toString(36).substring(2, 10)
+  return `${timestamp}-${random}`
+}
 
 /**
  * Register a callable function
@@ -275,6 +290,8 @@ function createErrorResponse(
 
 /**
  * Create success response
+ *
+ * @throws CallableError with RESOURCE_EXHAUSTED if response exceeds maximum size
  */
 function createSuccessResponse(
   result: unknown,
@@ -286,10 +303,21 @@ function createSuccessResponse(
   }
   setCorsHeaders(headers, requestHeaders)
 
+  const responseBody = { result }
+
+  // Validate response size (same limit as request)
+  const responseSize = getPayloadSize(responseBody)
+  if (responseSize > MAX_PAYLOAD_SIZE) {
+    throw new CallableError(
+      'RESOURCE_EXHAUSTED',
+      `Response payload size (${responseSize} bytes) exceeds maximum allowed size (${MAX_PAYLOAD_SIZE} bytes)`
+    )
+  }
+
   return {
     status: 200,
     headers,
-    body: { result },
+    body: responseBody,
   }
 }
 
@@ -376,8 +404,12 @@ export async function handleCallable(
     const body = request.body as { data: unknown }
     const data = body.data
 
-    // Create context
-    const context: CallableContext = { auth }
+    // Create context with instanceId and rawRequest
+    const context: CallableContext = {
+      auth,
+      instanceId: generateInstanceId(),
+      rawRequest: request,
+    }
 
     // Call the function
     const result = await handler(data, context)

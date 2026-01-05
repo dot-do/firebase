@@ -104,3 +104,17 @@ export {
   isValidPattern,
   type PathMatchResult,
 } from './path-matcher.js'
+
+// Safe regex utilities (ReDoS protection)
+export {
+  validateRegexPattern,
+  safeRegexTest,
+  safeRegexReplace,
+  createSafeRegex,
+  escapeRegex,
+  RegexSecurityError,
+  RegexTimeoutError,
+  type SafeRegexOptions,
+  type SafeRegexResult,
+  type SafeReplaceResult,
+} from './safe-regex.js'

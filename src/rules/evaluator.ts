@@ -19,6 +19,7 @@ import type {
   NullLiteralNode,
   ArrayLiteralNode,
 } from './parser'
+import { safeRegexTest, RegexSecurityError } from './safe-regex'
 
 // ============================================================================
 // Context Types
@@ -123,10 +124,10 @@ class Tokenizer {
         this.advance()
         let value = ''
         while (this.pos < this.source.length && this.current !== quote) {
-          if (this.current === '\\') {
+          if ((this.current as string) === '\\') {
             this.advance()
             if (this.pos < this.source.length) {
-              const escaped = this.current
+              const escaped = this.current as string
               switch (escaped) {
                 case 'n':
                   value += '\n'
@@ -193,7 +194,7 @@ class Tokenizer {
         let interpolationDepth = 0
         while (this.pos < this.source.length) {
           // Handle $( interpolation start
-          if (this.current === '$' && this.peek() === '(') {
+          if ((this.current as string) === '$' && this.peek() === '(') {
             value += this.current
             this.advance()
             value += this.current
@@ -202,7 +203,7 @@ class Tokenizer {
             continue
           }
           // Handle ) - check if it closes interpolation or the function call
-          if (this.current === ')') {
+          if ((this.current as string) === ')') {
             if (interpolationDepth > 0) {
               value += this.current
               this.advance()
@@ -495,9 +496,9 @@ class ExpressionParser {
         const paren = this.advance()
         const args: ExpressionNode[] = []
 
-        while (this.current && !(this.current.type === 'operator' && this.current.value === ')')) {
+        while (this.current && !(this.current.type === 'operator' && (this.current.value as string) === ')')) {
           args.push(this.parse())
-          if (this.current?.type === 'operator' && this.current.value === ',') {
+          if (this.current?.type === 'operator' && (this.current.value as string) === ',') {
             this.advance()
           }
         }
@@ -538,9 +539,9 @@ class ExpressionParser {
       const start = this.advance()
       const elements: ExpressionNode[] = []
 
-      while (this.current && !(this.current.type === 'operator' && this.current.value === ']')) {
+      while (this.current && !(this.current.type === 'operator' && (this.current.value as string) === ']')) {
         elements.push(this.parse())
-        if (this.current?.type === 'operator' && this.current.value === ',') {
+        if (this.current?.type === 'operator' && (this.current.value as string) === ',') {
           this.advance()
         }
       }
@@ -954,12 +955,15 @@ export class RulesEvaluator {
             throw new EvaluationError(`matches() expects 1 argument, got ${args.length}`)
           }
           const pattern = String(args[0])
-          try {
-            const regex = new RegExp(pattern)
-            return regex.test(object)
-          } catch (error) {
-            throw new EvaluationError(`Invalid regex pattern: ${pattern}`)
+          // Use safe regex execution to prevent ReDoS attacks
+          const result = safeRegexTest(pattern, object)
+          if (!result.success) {
+            if (result.rejectedForSafety) {
+              throw new EvaluationError(`Regex pattern rejected for security: ${result.error}`)
+            }
+            throw new EvaluationError(`Invalid regex pattern: ${result.error}`)
           }
+          return result.result
         }
 
         case 'size': {

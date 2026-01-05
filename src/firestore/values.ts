@@ -320,17 +320,17 @@ export function decodeValue(value: Value, options?: DecodeOptions): unknown {
   }
 
   // Handle timestamp
-  if ('timestampValue' in value) {
+  if ('timestampValue' in value && value.timestampValue !== undefined) {
     return parseTimestamp(value.timestampValue)
   }
 
   // Handle bytes
-  if ('bytesValue' in value) {
+  if ('bytesValue' in value && value.bytesValue !== undefined) {
     return decodeBytes(value.bytesValue)
   }
 
   // Handle reference
-  if ('referenceValue' in value) {
+  if ('referenceValue' in value && value.referenceValue !== undefined) {
     const refPath = value.referenceValue
     // Expected format: projects/{project}/databases/{database}/documents/{path}
     const match = refPath.match(/^projects\/[^/]+\/databases\/[^/]+\/documents\/(.+)$/)

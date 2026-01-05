@@ -597,8 +597,13 @@ describe('Firestore StructuredQuery to mongo.do Query Translation', () => {
 
       const result = translateStructuredQuery(query)
 
-      // MongoDB uses $type to check for NaN
-      expect(result.filter).toEqual({ value: { $type: 'double', $eq: NaN } })
+      // MongoDB uses $expr to check for NaN (value !== value is only true for NaN)
+      expect(result.filter).toEqual({
+        $and: [
+          { value: { $type: 'double' } },
+          { $expr: { $not: { $eq: ['$value', '$value'] } } }
+        ]
+      })
     })
 
     it('should translate IS_NOT_NAN unary filter', () => {
@@ -614,7 +619,14 @@ describe('Firestore StructuredQuery to mongo.do Query Translation', () => {
 
       const result = translateStructuredQuery(query)
 
-      expect(result.filter).toEqual({ value: { $not: { $type: 'double', $eq: NaN } } })
+      // IS_NOT_NAN: field doesn't exist, is not a double, or equals itself (not NaN)
+      expect(result.filter).toEqual({
+        $or: [
+          { value: { $exists: false } },
+          { value: { $not: { $type: 'double' } } },
+          { $expr: { $eq: ['$value', '$value'] } }
+        ]
+      })
     })
   })
 
@@ -795,6 +807,81 @@ describe('Firestore StructuredQuery to mongo.do Query Translation', () => {
 
       // startAfter means strictly greater than
       expect(result.filter).toEqual({ name: { $gt: 'John' } })
+    })
+  })
+
+  describe('Cursors - DESCENDING order', () => {
+    it('should translate startAt cursor with DESCENDING order', () => {
+      const query: StructuredQuery = {
+        from: [{ collectionId: 'scores' }],
+        orderBy: [{ field: { fieldPath: 'score' }, direction: 'DESCENDING' }],
+        startAt: {
+          values: [{ integerValue: '100' }],
+          before: false
+        }
+      }
+
+      const result = translateStructuredQuery(query)
+
+      // For DESCENDING order, startAt(100) means start from score 100 going down
+      // So we need scores <= 100
+      expect(result.filter).toEqual({ score: { $lte: 100 } })
+    })
+
+    it('should translate startAfter cursor with DESCENDING order', () => {
+      const query: StructuredQuery = {
+        from: [{ collectionId: 'scores' }],
+        orderBy: [{ field: { fieldPath: 'score' }, direction: 'DESCENDING' }],
+        startAt: {
+          values: [{ integerValue: '100' }],
+          before: true
+        }
+      }
+
+      const result = translateStructuredQuery(query)
+
+      // For DESCENDING order, startAfter(100) means start from scores < 100
+      expect(result.filter).toEqual({ score: { $lt: 100 } })
+    })
+
+    it('should translate endAt cursor with DESCENDING order', () => {
+      const query: StructuredQuery = {
+        from: [{ collectionId: 'scores' }],
+        orderBy: [{ field: { fieldPath: 'score' }, direction: 'DESCENDING' }],
+        endAt: {
+          values: [{ integerValue: '50' }],
+          before: false
+        }
+      }
+
+      const result = translateStructuredQuery(query)
+
+      // For DESCENDING order, endAt(50) means end at score 50 (inclusive)
+      // So we need scores >= 50
+      expect(result.filter).toEqual({ score: { $gte: 50 } })
+    })
+
+    it('should translate range query with DESCENDING order', () => {
+      const query: StructuredQuery = {
+        from: [{ collectionId: 'scores' }],
+        orderBy: [{ field: { fieldPath: 'score' }, direction: 'DESCENDING' }],
+        startAt: {
+          values: [{ integerValue: '100' }],
+          before: false
+        },
+        endAt: {
+          values: [{ integerValue: '50' }],
+          before: false
+        }
+      }
+
+      const result = translateStructuredQuery(query)
+
+      // Range from 100 down to 50 (inclusive) in DESCENDING order
+      // Score must be <= 100 AND >= 50
+      expect(result.filter).toEqual({
+        score: { $lte: 100, $gte: 50 }
+      })
     })
   })
 

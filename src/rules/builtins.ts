@@ -14,6 +14,8 @@
  * @see https://firebase.google.com/docs/reference/rules/rules
  */
 
+import { safeRegexTest, safeRegexReplace } from './safe-regex'
+
 // Type definitions for Firebase Security Rules context
 export interface RulesResource {
   __name__: string
@@ -137,10 +139,11 @@ export function createRulesContext(
       if (pendingWrites.has(path.path)) {
         const pending = pendingWrites.get(path.path)
         // null in pendingWrites indicates deletion
-        return pending === null ? null : pending
+        // undefined is not possible here since we checked .has() first
+        return pending === null ? null : (pending ?? null)
       }
       // Fall back to current state
-      return documentStore.get(path.path) || null
+      return documentStore.get(path.path) ?? null
     },
 
     existsAfter(path: RulesPath): boolean {
@@ -207,16 +210,21 @@ export function createRulesContext(
 
 /**
  * Create a RulesString wrapper with Firebase rules string methods
+ *
+ * Note: matches() and replace() use safe regex execution to prevent
+ * ReDoS (Regular Expression Denial of Service) attacks from malicious patterns.
  */
 export function createRulesString(value: string): RulesString {
   return {
     matches(regex: string): boolean {
-      try {
-        const re = new RegExp(regex)
-        return re.test(value)
-      } catch (e) {
+      // Use safe regex execution to prevent ReDoS attacks
+      const result = safeRegexTest(regex, value)
+      if (!result.success) {
+        // Return false for invalid or unsafe patterns
+        // This maintains backward compatibility while being secure
         return false
       }
+      return result.result ?? false
     },
     size(): number {
       return value.length
@@ -234,12 +242,14 @@ export function createRulesString(value: string): RulesString {
       return value.trim()
     },
     replace(regex: string, sub: string): string {
-      try {
-        const re = new RegExp(regex, 'g')
-        return value.replace(re, sub)
-      } catch (e) {
+      // Use safe regex execution to prevent ReDoS attacks
+      const result = safeRegexReplace(regex, value, sub)
+      if (!result.success) {
+        // Return original value for invalid or unsafe patterns
+        // This maintains backward compatibility while being secure
         return value
       }
+      return result.result ?? value
     },
     toUtf8(): unknown {
       // Return a byte array representation

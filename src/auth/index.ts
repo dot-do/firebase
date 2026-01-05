@@ -12,6 +12,8 @@ export {
   handleUpdate,
   handleDelete,
   handleSendOobCode,
+  setProjectId,
+  getProjectId,
   type IdentityToolkitError,
   type SignUpRequest,
   type SignUpResponse,

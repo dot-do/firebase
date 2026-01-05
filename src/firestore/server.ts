@@ -21,6 +21,7 @@ import {
   type DeleteDocumentOptions,
   type Precondition,
 } from './crud'
+import type { Value } from './values'
 
 /**
  * Parse query parameters from URL
@@ -198,7 +199,7 @@ async function handlePatch(
 
   // Update document
   try {
-    const doc = updateDocument(fullDocPath, docData.fields || {}, options)
+    const doc = updateDocument(fullDocPath, (docData.fields || {}) as Record<string, Value>, options)
     sendJson(res, 200, doc)
   } catch (error: any) {
     if (error.firestoreError) {
@@ -264,10 +265,30 @@ async function handleDelete(
 }
 
 /**
- * Validate field values (basic validation for known value types)
+ * Maximum nesting depth for documents (Firebase limit is 20)
  */
-function validateFields(fields: Record<string, any>): string | null {
+const MAX_NESTING_DEPTH = 20
+
+/**
+ * Maximum field value size in bytes (1 MiB limit)
+ */
+const MAX_FIELD_VALUE_SIZE = 1048576
+
+/**
+ * Validate field values with strict type checking
+ */
+function validateFields(fields: Record<string, any>, depth: number = 0): string | null {
+  // Check nesting depth limit
+  if (depth > MAX_NESTING_DEPTH) {
+    return `Document exceeds maximum nesting depth of ${MAX_NESTING_DEPTH}`
+  }
+
   for (const [key, value] of Object.entries(fields)) {
+    // Validate field path (no empty segments, valid characters)
+    if (!key || key.includes('..') || /^\.|\.$/.test(key)) {
+      return `Invalid field path: ${key}`
+    }
+
     if (typeof value !== 'object' || value === null) {
       return `Invalid field value for ${key}: must be an object`
     }
@@ -291,9 +312,15 @@ function validateFields(fields: Record<string, any>): string | null {
       return `Invalid field value for ${key}: unknown value type`
     }
 
+    // Validate specific field types
+    const typeError = validateFieldType(key, value)
+    if (typeError) {
+      return typeError
+    }
+
     // Recursively validate map fields
     if (value.mapValue?.fields) {
-      const nestedError = validateFields(value.mapValue.fields)
+      const nestedError = validateFields(value.mapValue.fields, depth + 1)
       if (nestedError) {
         return nestedError
       }
@@ -301,13 +328,143 @@ function validateFields(fields: Record<string, any>): string | null {
 
     // Recursively validate array values
     if (value.arrayValue?.values) {
+      if (!Array.isArray(value.arrayValue.values)) {
+        return `Invalid array value for ${key}: values must be an array`
+      }
       for (const arrayItem of value.arrayValue.values) {
         const tempObj = { temp: arrayItem }
-        const arrayError = validateFields(tempObj)
+        const arrayError = validateFields(tempObj, depth + 1)
         if (arrayError) {
           return arrayError.replace('temp', `${key}[item]`)
         }
       }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Validate specific field types match expected schema
+ */
+function validateFieldType(fieldName: string, value: Record<string, any>): string | null {
+  // Validate GeoPoint
+  if ('geoPointValue' in value) {
+    const geo = value.geoPointValue
+    if (typeof geo !== 'object' || geo === null) {
+      return `Invalid geoPointValue for ${fieldName}: must be an object`
+    }
+    if (typeof geo.latitude !== 'number' || typeof geo.longitude !== 'number') {
+      return `Invalid geoPointValue for ${fieldName}: must have numeric latitude and longitude`
+    }
+    if (geo.latitude < -90 || geo.latitude > 90) {
+      return `Invalid geoPointValue for ${fieldName}: latitude must be between -90 and 90`
+    }
+    if (geo.longitude < -180 || geo.longitude > 180) {
+      return `Invalid geoPointValue for ${fieldName}: longitude must be between -180 and 180`
+    }
+  }
+
+  // Validate Timestamp
+  if ('timestampValue' in value) {
+    const ts = value.timestampValue
+    if (typeof ts === 'string') {
+      // Validate ISO 8601 format
+      const date = new Date(ts)
+      if (isNaN(date.getTime())) {
+        return `Invalid timestampValue for ${fieldName}: invalid date format`
+      }
+    } else if (typeof ts === 'object' && ts !== null) {
+      // Validate seconds/nanos format
+      if (ts.seconds !== undefined && typeof ts.seconds !== 'number' && typeof ts.seconds !== 'string') {
+        return `Invalid timestampValue for ${fieldName}: seconds must be a number or string`
+      }
+      if (ts.nanos !== undefined && typeof ts.nanos !== 'number') {
+        return `Invalid timestampValue for ${fieldName}: nanos must be a number`
+      }
+      if (ts.nanos !== undefined && (ts.nanos < 0 || ts.nanos >= 1000000000)) {
+        return `Invalid timestampValue for ${fieldName}: nanos must be between 0 and 999999999`
+      }
+    } else {
+      return `Invalid timestampValue for ${fieldName}: must be a string or object`
+    }
+  }
+
+  // Validate Reference
+  if ('referenceValue' in value) {
+    const ref = value.referenceValue
+    if (typeof ref !== 'string') {
+      return `Invalid referenceValue for ${fieldName}: must be a string`
+    }
+    // Validate reference path format: projects/{project}/databases/{database}/documents/{path}
+    const refPattern = /^projects\/[^/]+\/databases\/[^/]+\/documents\/.+$/
+    if (!refPattern.test(ref)) {
+      return `Invalid referenceValue for ${fieldName}: invalid document reference path`
+    }
+  }
+
+  // Validate Integer
+  if ('integerValue' in value) {
+    const intVal = value.integerValue
+    if (typeof intVal !== 'string' && typeof intVal !== 'number') {
+      return `Invalid integerValue for ${fieldName}: must be a string or number`
+    }
+    const num = Number(intVal)
+    if (!Number.isInteger(num)) {
+      return `Invalid integerValue for ${fieldName}: must be an integer`
+    }
+  }
+
+  // Validate Double
+  if ('doubleValue' in value) {
+    const dblVal = value.doubleValue
+    if (typeof dblVal !== 'number' && typeof dblVal !== 'string') {
+      return `Invalid doubleValue for ${fieldName}: must be a number or string`
+    }
+    const num = Number(dblVal)
+    // NaN and Infinity are valid double values
+    if (typeof num !== 'number') {
+      return `Invalid doubleValue for ${fieldName}: must be a valid number`
+    }
+  }
+
+  // Validate Boolean
+  if ('booleanValue' in value) {
+    if (typeof value.booleanValue !== 'boolean') {
+      return `Invalid booleanValue for ${fieldName}: must be a boolean`
+    }
+  }
+
+  // Validate String (check size)
+  if ('stringValue' in value) {
+    if (typeof value.stringValue !== 'string') {
+      return `Invalid stringValue for ${fieldName}: must be a string`
+    }
+    if (value.stringValue.length > MAX_FIELD_VALUE_SIZE) {
+      return `Invalid stringValue for ${fieldName}: exceeds maximum size of ${MAX_FIELD_VALUE_SIZE} bytes`
+    }
+  }
+
+  // Validate Bytes
+  if ('bytesValue' in value) {
+    const bytes = value.bytesValue
+    if (typeof bytes !== 'string') {
+      return `Invalid bytesValue for ${fieldName}: must be a base64 string`
+    }
+    // Check if it's valid base64
+    try {
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(bytes)) {
+        return `Invalid bytesValue for ${fieldName}: must be valid base64`
+      }
+    } catch {
+      return `Invalid bytesValue for ${fieldName}: must be valid base64`
+    }
+  }
+
+  // Validate Null
+  if ('nullValue' in value) {
+    if (value.nullValue !== 'NULL_VALUE' && value.nullValue !== null) {
+      return `Invalid nullValue for ${fieldName}: must be 'NULL_VALUE' or null`
     }
   }
 

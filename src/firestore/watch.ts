@@ -17,8 +17,14 @@
  */
 
 import type { Value } from './values'
-import { getDocument, type Document as CrudDocument } from './crud'
-import { executeQuery } from './query'
+import {
+  getDocument,
+  getDocumentsInCollection,
+  subscribeToDocumentChanges,
+  type Document as CrudDocument,
+  type DocumentChangeEvent as CrudDocumentChangeEvent,
+} from './crud'
+import { runQuery } from './query'
 
 // ============================================================================
 // Core Types
@@ -812,8 +818,20 @@ function encodeSimpleValue(value: unknown): Value {
 }
 
 /**
+ * Convert CrudDocument to watch Document format
+ */
+function crudDocToWatchDoc(doc: CrudDocument): Document {
+  return {
+    name: doc.name,
+    fields: doc.fields || {},
+    createTime: doc.createTime || new Date().toISOString(),
+    updateTime: doc.updateTime || new Date().toISOString(),
+  }
+}
+
+/**
  * Start listening to Firestore
- * This is a stub that would connect to the actual HTTP streaming endpoint
+ * Connects to the in-memory document store and subscribes to changes
  */
 function startListening(
   projectId: string,
@@ -822,43 +840,109 @@ function startListening(
   target: WatchTarget
 ): { cancel: () => void } {
   let cancelled = false
+  let unsubscribe: (() => void) | null = null
 
-  // In a real implementation, this would:
-  // 1. Make HTTP POST to /v1/projects/{project}/databases/{database}/documents:listen
-  // 2. Set up streaming response handling
-  // 3. Parse incoming ListenResponse events
-  // 4. Route events to the appropriate WatchTarget
+  // Determine what we're watching
+  const request = requests[0]
+  const addTarget = request?.addTarget
+  if (!addTarget) {
+    return { cancel: () => {} }
+  }
 
-  // For now, create a mock implementation that simulates the stream
-  const simulateStream = async () => {
-    try {
-      const response = await mockListenToFirestore(projectId, databaseId, requests)
-      const reader = response.getReader()
+  const targetId = addTarget.targetId
 
-      while (!cancelled) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (!value) continue
-
-        // Route events to target
-        if (value.targetChange) {
-          target.handleTargetChange(value.targetChange)
-        }
-        if (value.documentChange) {
-          target.handleDocumentChange(value.documentChange)
-        }
-        if (value.documentDelete) {
-          target.handleDocumentDelete(value.documentDelete)
-        }
-        if (value.documentRemove) {
-          target.handleDocumentRemove(value.documentRemove)
+  // Helper to check if a document path matches what we're watching
+  const matchesWatch = (docPath: string): boolean => {
+    if (addTarget.documents?.documents) {
+      // Watching specific documents
+      return addTarget.documents.documents.includes(docPath)
+    }
+    if (addTarget.query?.structuredQuery?.from) {
+      // Watching a collection query
+      const collectionId = addTarget.query.structuredQuery.from[0]?.collectionId
+      if (collectionId) {
+        // Check if document is in this collection
+        const basePath = `projects/${projectId}/databases/${databaseId}/documents/`
+        const collectionPath = `${basePath}${collectionId}/`
+        if (docPath.startsWith(collectionPath)) {
+          // Check it's a direct child (not in a subcollection)
+          const relativePath = docPath.slice(collectionPath.length)
+          return !relativePath.includes('/')
         }
       }
+    }
+    return false
+  }
+
+  // Start watching
+  const startWatch = async () => {
+    try {
+      // Send initial CURRENT state after loading initial documents
+      const initialDocs: Document[] = []
+
+      if (addTarget.documents?.documents) {
+        // Document watch - get the specific documents
+        for (const docPath of addTarget.documents.documents) {
+          const doc = getDocument(docPath)
+          if (doc) {
+            initialDocs.push(crudDocToWatchDoc(doc))
+          }
+        }
+      } else if (addTarget.query?.structuredQuery?.from) {
+        // Query watch - get documents from collection
+        const collectionId = addTarget.query.structuredQuery.from[0]?.collectionId
+        if (collectionId) {
+          const basePath = `projects/${projectId}/databases/${databaseId}/documents/${collectionId}`
+          const docs = getDocumentsInCollection(basePath)
+          for (const doc of docs) {
+            initialDocs.push(crudDocToWatchDoc(doc))
+          }
+        }
+      }
+
+      // Emit initial document changes
+      for (const doc of initialDocs) {
+        if (cancelled) return
+        target.handleDocumentChange({
+          document: doc,
+          targetIds: [targetId],
+        })
+      }
+
+      // Mark target as CURRENT
+      if (!cancelled) {
+        target.handleTargetChange({
+          targetChangeType: 'CURRENT',
+          targetIds: [targetId],
+          readTime: new Date().toISOString(),
+          resumeToken: Buffer.from(Date.now().toString()).toString('base64'),
+        })
+      }
+
+      // Subscribe to future changes
+      unsubscribe = subscribeToDocumentChanges((event: CrudDocumentChangeEvent) => {
+        if (cancelled) return
+        if (!matchesWatch(event.path)) return
+
+        if (event.type === 'removed') {
+          target.handleDocumentDelete({
+            document: event.path,
+            removedTargetIds: [targetId],
+            readTime: new Date().toISOString(),
+          })
+        } else {
+          // added or modified
+          if (event.document) {
+            target.handleDocumentChange({
+              document: crudDocToWatchDoc(event.document),
+              targetIds: [targetId],
+            })
+          }
+        }
+      })
     } catch (error) {
       if (!cancelled) {
-        // Emit error to callback
         const errorObj = error instanceof Error ? error : new Error(String(error))
-        // Create empty snapshot with error
         const emptySnapshot: DocumentSnapshot = {
           ref: '',
           id: '',
@@ -872,51 +956,17 @@ function startListening(
     }
   }
 
-  // Start the stream
-  simulateStream()
+  // Start the watch asynchronously
+  startWatch()
 
   return {
     cancel: () => {
       cancelled = true
-    },
-  }
-}
-
-/**
- * Mock implementation of listenToFirestore
- * In production, this would make actual HTTP requests
- */
-async function mockListenToFirestore(
-  _projectId: string,
-  _databaseId: string,
-  _requests: ListenRequest[]
-): Promise<ListenStreamResponse> {
-  // This is a stub implementation
-  // Real implementation would make HTTP POST request and return streaming response
-
-  const events: ListenResponse[] = []
-  let eventIndex = 0
-  let cancelled = false
-
-  return {
-    status: 200,
-    headers: {
-      'content-type': 'application/json',
-      'transfer-encoding': 'chunked',
-    },
-    getReader(): StreamReader {
-      return {
-        async read(): Promise<{ done: boolean; value?: ListenResponse }> {
-          if (cancelled || eventIndex >= events.length) {
-            return { done: true }
-          }
-          const event = events[eventIndex++]
-          return { done: false, value: event }
-        },
-        cancel(): void {
-          cancelled = true
-        },
+      if (unsubscribe) {
+        unsubscribe()
+        unsubscribe = null
       }
     },
   }
 }
+

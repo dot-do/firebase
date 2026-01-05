@@ -1743,49 +1743,60 @@ export function traverseAST(
     visitor(node, parent)
 
     if (node.type === 'RulesFile') {
-      for (const service of node.services) {
+      const n = node as RulesFileNode
+      for (const service of n.services) {
         visit(service, node)
       }
-      for (const comment of node.comments) {
+      for (const comment of n.comments) {
         visit(comment, node)
       }
     } else if (node.type === 'ServiceDeclaration') {
-      for (const match of node.body) {
+      const n = node as ServiceDeclarationNode
+      for (const match of n.body) {
         visit(match, node)
       }
     } else if (node.type === 'MatchBlock') {
-      visit(node.path, node)
-      for (const item of node.body) {
+      const n = node as MatchBlockNode
+      visit(n.path, node)
+      for (const item of n.body) {
         visit(item, node)
       }
     } else if (node.type === 'PathPattern') {
-      for (const segment of node.segments) {
+      const n = node as PathPatternNode
+      for (const segment of n.segments) {
         visit(segment, node)
       }
     } else if (node.type === 'AllowStatement') {
-      if (node.condition) {
-        visit(node.condition, node)
+      const n = node as AllowStatementNode
+      if (n.condition) {
+        visit(n.condition, node)
       }
     } else if (node.type === 'FunctionDeclaration') {
-      for (const param of node.parameters) {
+      const n = node as FunctionDeclarationNode
+      for (const param of n.parameters) {
         visit(param, node)
       }
-      visit(node.body, node)
+      visit(n.body, node)
     } else if (node.type === 'BinaryExpression') {
-      visit(node.left, node)
-      visit(node.right, node)
+      const n = node as BinaryExpressionNode
+      visit(n.left, node)
+      visit(n.right, node)
     } else if (node.type === 'UnaryExpression') {
-      visit(node.argument, node)
+      const n = node as UnaryExpressionNode
+      visit(n.argument, node)
     } else if (node.type === 'MemberExpression') {
-      visit(node.object, node)
-      visit(node.property, node)
+      const n = node as MemberExpressionNode
+      visit(n.object, node)
+      visit(n.property, node)
     } else if (node.type === 'CallExpression') {
-      visit(node.callee, node)
-      for (const arg of node.arguments) {
+      const n = node as CallExpressionNode
+      visit(n.callee, node)
+      for (const arg of n.arguments) {
         visit(arg, node)
       }
     } else if (node.type === 'ArrayLiteral') {
-      for (const element of node.elements) {
+      const n = node as ArrayLiteralNode
+      for (const element of n.elements) {
         visit(element, node)
       }
     }

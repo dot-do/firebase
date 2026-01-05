@@ -67,6 +67,17 @@ export {
   resetStorageConfig,
   getResumableMemoryUsage,
   resetMemoryTracking,
+  getUrlSigningSecret,
+  resetUrlSigningSecret,
   DEFAULT_CONFIG,
   type StorageConfig,
+  type StorageSecurityMode,
+} from './config.js'
+
+// Auth and Access Control
+export {
+  verifyStorageAuth,
+  checkStoragePermission,
+  type StorageAuthContext,
+  type AuthVerificationResult,
 } from './config.js'

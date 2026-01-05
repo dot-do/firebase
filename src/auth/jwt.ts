@@ -62,6 +62,8 @@ export interface GenerateTokenOptions {
   identities?: Record<string, string[]>
   email?: string
   emailVerified?: boolean
+  displayName?: string
+  photoURL?: string
 }
 
 interface FirebaseJwtPayload {
@@ -180,7 +182,7 @@ export async function rotateSigningKey(): Promise<{ kid: string }> {
 export async function generateFirebaseToken(
   options: GenerateTokenOptions
 ): Promise<string> {
-  const { uid, projectId, claims, signInProvider, identities, email, emailVerified } = options
+  const { uid, projectId, claims, signInProvider, identities, email, emailVerified, displayName, photoURL } = options
 
   // Validate required parameters
   if (!uid || uid.trim() === '') {
@@ -223,6 +225,14 @@ export async function generateFirebaseToken(
 
   if (emailVerified !== undefined) {
     payload.email_verified = emailVerified
+  }
+
+  if (displayName !== undefined) {
+    payload.name = displayName
+  }
+
+  if (photoURL !== undefined) {
+    payload.picture = photoURL
   }
 
   // Merge custom claims, but protect reserved claims

@@ -16,6 +16,7 @@
  * @see https://firebase.google.com/docs/storage/web/upload-files
  */
 
+import { createHash } from 'node:crypto'
 import {
   getStorageConfig,
   allocateResumableMemory,
@@ -454,33 +455,47 @@ function getSession(uploadUri: string): UploadSession {
 
 /**
  * Calculate MD5 hash (base64)
+ * Uses Node.js crypto module to compute proper MD5 of entire content
  */
 function calculateMD5(data: Uint8Array): string {
-  // Simplified mock implementation - in real scenario would use crypto
-  const hash = Array.from(data.slice(0, 16))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('')
-  return Buffer.from(hash, 'hex').toString('base64')
+  return createHash('md5').update(data).digest('base64')
 }
 
 /**
+ * CRC32C lookup table (Castagnoli polynomial 0x82F63B78)
+ * Pre-computed for performance
+ */
+const CRC32C_TABLE = (() => {
+  const table = new Uint32Array(256)
+  for (let i = 0; i < 256; i++) {
+    let crc = i
+    for (let j = 0; j < 8; j++) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0x82f63b78 : 0)
+    }
+    table[i] = crc >>> 0
+  }
+  return table
+})()
+
+/**
  * Calculate CRC32C checksum (base64)
+ * Uses Castagnoli polynomial for GCS/Firebase Storage compatibility
+ * Processes entire content, not just first N bytes
  */
 function calculateCRC32C(data: Uint8Array): string {
-  // Simplified mock implementation - in real scenario would use proper CRC32C
   let crc = 0xffffffff
-  for (let i = 0; i < Math.min(data.length, 100); i++) {
-    crc ^= data[i]
-    for (let j = 0; j < 8; j++) {
-      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0)
-    }
+  for (let i = 0; i < data.length; i++) {
+    crc = CRC32C_TABLE[(crc ^ data[i]) & 0xff] ^ (crc >>> 8)
   }
-  return Buffer.from([(crc ^ 0xffffffff) >>> 0].map(n => [
-    (n >>> 24) & 0xff,
-    (n >>> 16) & 0xff,
-    (n >>> 8) & 0xff,
-    n & 0xff
-  ]).flat()).toString('base64')
+  crc = (crc ^ 0xffffffff) >>> 0
+  // Convert to big-endian bytes for base64 encoding (GCS format)
+  const bytes = new Uint8Array([
+    (crc >>> 24) & 0xff,
+    (crc >>> 16) & 0xff,
+    (crc >>> 8) & 0xff,
+    crc & 0xff
+  ])
+  return Buffer.from(bytes).toString('base64')
 }
 
 /**

@@ -82,6 +82,83 @@ export interface FirestoreError {
  */
 const documentStore = new Map<string, Document>()
 
+// ============================================================================
+// Document Change Event System (for Watch API)
+// ============================================================================
+
+/**
+ * Types of document change events
+ */
+export type DocumentChangeType = 'added' | 'modified' | 'removed'
+
+/**
+ * Document change event
+ */
+export interface DocumentChangeEvent {
+  type: DocumentChangeType
+  path: string
+  document?: Document
+  oldDocument?: Document
+}
+
+/**
+ * Document change listener callback
+ */
+export type DocumentChangeListener = (event: DocumentChangeEvent) => void
+
+/**
+ * Set of registered document change listeners
+ */
+const documentChangeListeners = new Set<DocumentChangeListener>()
+
+/**
+ * Subscribe to document changes
+ * @param listener - Callback to invoke on document changes
+ * @returns Unsubscribe function
+ */
+export function subscribeToDocumentChanges(listener: DocumentChangeListener): () => void {
+  documentChangeListeners.add(listener)
+  return () => {
+    documentChangeListeners.delete(listener)
+  }
+}
+
+/**
+ * Emit a document change event to all listeners
+ */
+function emitDocumentChange(event: DocumentChangeEvent): void {
+  for (const listener of documentChangeListeners) {
+    try {
+      listener(event)
+    } catch (error) {
+      console.error('Document change listener error:', error)
+    }
+  }
+}
+
+/**
+ * Get all documents in a collection (for Watch initial sync)
+ * @param collectionPath - Collection path pattern (e.g., "projects/x/databases/y/documents/users")
+ * @returns Array of documents in the collection
+ */
+export function getDocumentsInCollection(collectionPath: string): Document[] {
+  const results: Document[] = []
+  const prefix = collectionPath.endsWith('/') ? collectionPath : `${collectionPath}/`
+
+  for (const [path, doc] of documentStore.entries()) {
+    // Match documents directly in this collection (not subcollections)
+    if (path.startsWith(prefix)) {
+      const relativePath = path.slice(prefix.length)
+      // Only include if it's a direct child (no additional slashes)
+      if (!relativePath.includes('/')) {
+        results.push({ ...doc })
+      }
+    }
+  }
+
+  return results
+}
+
 /**
  * Get a raw document directly from the store (for internal use by batch.ts)
  * Unlike getDocument(), this returns the actual stored document without copying
@@ -100,7 +177,16 @@ export function getDocumentRaw(path: string): Document | null {
  * @param doc - The document to store
  */
 export function setDocumentRaw(path: string, doc: Document): void {
+  const existing = documentStore.get(path)
   documentStore.set(path, doc)
+
+  // Emit change event
+  emitDocumentChange({
+    type: existing ? 'modified' : 'added',
+    path,
+    document: doc,
+    oldDocument: existing,
+  })
 }
 
 /**
@@ -109,7 +195,16 @@ export function setDocumentRaw(path: string, doc: Document): void {
  * @param path - Full document path
  */
 export function deleteDocumentRaw(path: string): void {
+  const existing = documentStore.get(path)
   documentStore.delete(path)
+
+  if (existing) {
+    emitDocumentChange({
+      type: 'removed',
+      path,
+      oldDocument: existing,
+    })
+  }
 }
 
 /**

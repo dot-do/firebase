@@ -285,9 +285,24 @@ function translateUnaryFilter(filter: UnaryFilter): Record<string, unknown> {
     case 'IS_NOT_NULL':
       return { [fieldPath]: { $ne: null } }
     case 'IS_NAN':
-      return { [fieldPath]: { $type: 'double', $eq: NaN } }
+      // Use $expr with $isNumber check and NaN comparison via $eq with special handling
+      // MongoDB doesn't have a direct $isNaN, but we can check if value equals itself
+      // NaN is the only value where value !== value
+      return {
+        $and: [
+          { [fieldPath]: { $type: 'double' } },
+          { $expr: { $not: { $eq: [`$${fieldPath}`, `$${fieldPath}`] } } }
+        ]
+      }
     case 'IS_NOT_NAN':
-      return { [fieldPath]: { $not: { $type: 'double', $eq: NaN } } }
+      // Document is not NaN if: field doesn't exist, is not a double, or equals itself
+      return {
+        $or: [
+          { [fieldPath]: { $exists: false } },
+          { [fieldPath]: { $not: { $type: 'double' } } },
+          { $expr: { $eq: [`$${fieldPath}`, `$${fieldPath}`] } }
+        ]
+      }
     default:
       throw new Error(`Unsupported unary filter operator: ${op}`)
   }
@@ -606,14 +621,272 @@ export function translateStructuredQuery(query: StructuredQuery): MongoQuery {
 }
 
 /**
- * Executes a query and returns results
+ * Executes a query against the in-memory document store
  *
- * This is a placeholder for the actual query execution logic.
- * In a real implementation, this would execute the query against mongo.do
- * and return the results with proper document and metadata formatting.
+ * @param query - The StructuredQuery to execute
+ * @param projectId - Firebase project ID
+ * @param databaseId - Firestore database ID (default: "(default)")
+ * @returns Query results with documents and metadata
  */
-export function runQuery(query: StructuredQuery): Promise<QueryResult> {
-  throw new Error('Not implemented: runQuery')
+export async function runQuery(
+  query: StructuredQuery,
+  projectId: string = 'default-project',
+  databaseId: string = '(default)'
+): Promise<QueryResult> {
+  const { getAllDocuments } = await import('./crud.js')
+
+  // Translate the query to understand what we need
+  const mongoQuery = translateStructuredQuery(query)
+
+  // Build the collection path prefix
+  const collectionPrefix = `projects/${projectId}/databases/${databaseId}/documents/${mongoQuery.collection}/`
+
+  // Get all documents from the store
+  const allDocuments = getAllDocuments()
+  const collectionDocs: Array<{
+    name: string
+    fields: Record<string, FirestoreValue>
+    createTime?: string
+    updateTime?: string
+    data: Record<string, unknown> // JavaScript version for filtering
+  }> = []
+
+  // Filter documents to only those in the target collection
+  for (const [path, doc] of allDocuments.entries()) {
+    if (path.startsWith(collectionPrefix)) {
+      // Check it's a direct child (not in a subcollection)
+      const relativePath = path.slice(collectionPrefix.length)
+      if (!relativePath.includes('/')) {
+        // Convert fields to JavaScript for filtering
+        const data: Record<string, unknown> = {}
+        if (doc.fields) {
+          for (const [key, value] of Object.entries(doc.fields)) {
+            data[key] = convertFirestoreValue(value as FirestoreValue)
+          }
+        }
+        collectionDocs.push({
+          name: doc.name,
+          fields: (doc.fields || {}) as Record<string, FirestoreValue>,
+          createTime: doc.createTime,
+          updateTime: doc.updateTime,
+          data,
+        })
+      }
+    }
+  }
+
+  // Apply filter if present
+  let filteredDocs = collectionDocs
+  if (mongoQuery.filter) {
+    filteredDocs = collectionDocs.filter((doc) =>
+      matchesFilter(doc.data, mongoQuery.filter!)
+    )
+  }
+
+  // Apply sorting
+  if (mongoQuery.sort) {
+    const sortEntries = Object.entries(mongoQuery.sort)
+    filteredDocs.sort((a, b) => {
+      for (const [field, direction] of sortEntries) {
+        const aVal = getNestedField(a.data, field)
+        const bVal = getNestedField(b.data, field)
+        const cmp = compareValues(aVal, bVal)
+        if (cmp !== 0) {
+          return direction === 1 ? cmp : -cmp
+        }
+      }
+      return 0
+    })
+  }
+
+  // Apply offset (skip)
+  const skippedResults = mongoQuery.skip || 0
+  if (skippedResults > 0) {
+    filteredDocs = filteredDocs.slice(skippedResults)
+  }
+
+  // Apply limit
+  if (mongoQuery.limit !== undefined) {
+    filteredDocs = filteredDocs.slice(0, mongoQuery.limit)
+  }
+
+  // Apply projection if needed
+  const documents: QueryDocument[] = filteredDocs.map((doc) => {
+    let fields = doc.fields
+    if (mongoQuery.projection && Object.keys(mongoQuery.projection).length > 0) {
+      fields = {}
+      for (const fieldPath of Object.keys(mongoQuery.projection)) {
+        if (mongoQuery.projection[fieldPath] === 1 && doc.fields[fieldPath]) {
+          fields[fieldPath] = doc.fields[fieldPath]
+        }
+      }
+    }
+    return {
+      name: doc.name,
+      fields,
+      createTime: doc.createTime,
+      updateTime: doc.updateTime,
+    }
+  })
+
+  return {
+    documents,
+    metadata: {
+      skippedResults: skippedResults > 0 ? skippedResults : undefined,
+      readTime: new Date().toISOString(),
+    },
+  }
+}
+
+/**
+ * Get a nested field value from an object using dot notation
+ */
+function getNestedField(obj: Record<string, unknown>, path: string): unknown {
+  const parts = path.split('.')
+  let current: unknown = obj
+  for (const part of parts) {
+    if (current === null || current === undefined) return undefined
+    if (typeof current !== 'object') return undefined
+    current = (current as Record<string, unknown>)[part]
+  }
+  return current
+}
+
+/**
+ * Compare two values for sorting
+ */
+function compareValues(a: unknown, b: unknown): number {
+  // Handle null/undefined
+  if (a === null || a === undefined) return b === null || b === undefined ? 0 : -1
+  if (b === null || b === undefined) return 1
+
+  // Handle dates
+  if (a instanceof Date && b instanceof Date) {
+    return a.getTime() - b.getTime()
+  }
+
+  // Handle numbers
+  if (typeof a === 'number' && typeof b === 'number') {
+    return a - b
+  }
+
+  // Handle strings
+  if (typeof a === 'string' && typeof b === 'string') {
+    return a.localeCompare(b)
+  }
+
+  // Handle booleans
+  if (typeof a === 'boolean' && typeof b === 'boolean') {
+    return a === b ? 0 : a ? 1 : -1
+  }
+
+  // Fallback: convert to string and compare
+  return String(a).localeCompare(String(b))
+}
+
+/**
+ * Check if a document matches a MongoDB-style filter
+ */
+function matchesFilter(data: Record<string, unknown>, filter: Record<string, unknown>): boolean {
+  for (const [key, condition] of Object.entries(filter)) {
+    // Handle logical operators
+    if (key === '$and') {
+      const conditions = condition as Record<string, unknown>[]
+      if (!conditions.every((c) => matchesFilter(data, c))) {
+        return false
+      }
+      continue
+    }
+
+    if (key === '$or') {
+      const conditions = condition as Record<string, unknown>[]
+      if (!conditions.some((c) => matchesFilter(data, c))) {
+        return false
+      }
+      continue
+    }
+
+    // Regular field condition
+    const fieldValue = getNestedField(data, key)
+
+    if (typeof condition === 'object' && condition !== null && !Array.isArray(condition)) {
+      // Condition is an object with operators
+      const operators = condition as Record<string, unknown>
+      for (const [op, expected] of Object.entries(operators)) {
+        if (!matchesOperator(fieldValue, op, expected)) {
+          return false
+        }
+      }
+    } else {
+      // Direct equality
+      if (!deepEqual(fieldValue, condition)) {
+        return false
+      }
+    }
+  }
+  return true
+}
+
+/**
+ * Check if a value matches a MongoDB operator condition
+ */
+function matchesOperator(value: unknown, op: string, expected: unknown): boolean {
+  switch (op) {
+    case '$eq':
+      return deepEqual(value, expected)
+    case '$ne':
+      return !deepEqual(value, expected)
+    case '$lt':
+      return compareValues(value, expected) < 0
+    case '$lte':
+      return compareValues(value, expected) <= 0
+    case '$gt':
+      return compareValues(value, expected) > 0
+    case '$gte':
+      return compareValues(value, expected) >= 0
+    case '$in':
+      if (!Array.isArray(expected)) return false
+      return expected.some((e) => deepEqual(value, e))
+    case '$nin':
+      if (!Array.isArray(expected)) return false
+      return !expected.some((e) => deepEqual(value, e))
+    case '$elemMatch':
+      if (!Array.isArray(value)) return false
+      // For simple ARRAY_CONTAINS, expected is the value to find
+      return value.some((v) => deepEqual(v, expected))
+    default:
+      console.warn(`Unknown operator: ${op}`)
+      return true
+  }
+}
+
+/**
+ * Deep equality check
+ */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a === null || b === null) return false
+  if (typeof a !== typeof b) return false
+
+  if (a instanceof Date && b instanceof Date) {
+    return a.getTime() === b.getTime()
+  }
+
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false
+    return a.every((val, i) => deepEqual(val, b[i]))
+  }
+
+  if (typeof a === 'object' && typeof b === 'object') {
+    const aObj = a as Record<string, unknown>
+    const bObj = b as Record<string, unknown>
+    const aKeys = Object.keys(aObj)
+    const bKeys = Object.keys(bObj)
+    if (aKeys.length !== bKeys.length) return false
+    return aKeys.every((key) => deepEqual(aObj[key], bObj[key]))
+  }
+
+  return false
 }
 
 /**

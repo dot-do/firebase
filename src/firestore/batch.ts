@@ -273,6 +273,34 @@ function cloneDocument(doc: FirestoreDocument): FirestoreDocument {
 }
 
 /**
+ * Compare two documents for equality (for conflict detection).
+ * This performs a deep comparison of document content, not just updateTime.
+ * Returns true if documents are equal (no conflict), false if they differ.
+ */
+function documentsEqual(
+  a: FirestoreDocument | null,
+  b: FirestoreDocument | null
+): boolean {
+  // Both null/undefined - equal (document didn't exist in both cases)
+  if (a === null && b === null) return true
+  if (a === undefined && b === undefined) return true
+
+  // One exists, other doesn't - not equal
+  if (!a || !b) return false
+
+  // Compare updateTime first (fast path)
+  if (a.updateTime !== b.updateTime) return false
+
+  // Compare createTime
+  if (a.createTime !== b.createTime) return false
+
+  // Deep compare fields
+  const aFields = JSON.stringify(a.fields || {})
+  const bFields = JSON.stringify(b.fields || {})
+  return aFields === bFields
+}
+
+/**
  * Transaction management store
  * Document storage is delegated to crud.ts for a single source of truth
  */
@@ -675,10 +703,128 @@ function getNumericValue(value: Value | undefined): number | null {
 }
 
 /**
- * Check if array contains a value (deep equality)
+ * Check if array contains a value (deep equality with proper handling of complex types)
  */
 function arrayContainsValue(array: Value[], value: Value): boolean {
-  return array.some(v => JSON.stringify(v) === JSON.stringify(value))
+  return array.some(v => valuesAreEqual(v, value))
+}
+
+/**
+ * Deep equality comparison for Firestore Value types.
+ * Properly handles NaN, Infinity, GeoPoints, Timestamps, and nested structures.
+ */
+function valuesAreEqual(a: Value, b: Value): boolean {
+  // Handle null values
+  if ('nullValue' in a && 'nullValue' in b) {
+    return true
+  }
+
+  // Handle boolean values
+  if ('booleanValue' in a && 'booleanValue' in b) {
+    return a.booleanValue === b.booleanValue
+  }
+
+  // Handle integer values
+  if ('integerValue' in a && 'integerValue' in b) {
+    return Number(a.integerValue) === Number(b.integerValue)
+  }
+
+  // Handle double values (including NaN, Infinity, -Infinity)
+  if ('doubleValue' in a && 'doubleValue' in b) {
+    const aNum = Number(a.doubleValue)
+    const bNum = Number(b.doubleValue)
+    // NaN === NaN should be true for equality comparison
+    if (Number.isNaN(aNum) && Number.isNaN(bNum)) {
+      return true
+    }
+    return aNum === bNum
+  }
+
+  // Handle string values
+  if ('stringValue' in a && 'stringValue' in b) {
+    return a.stringValue === b.stringValue
+  }
+
+  // Handle bytes values
+  if ('bytesValue' in a && 'bytesValue' in b) {
+    return a.bytesValue === b.bytesValue
+  }
+
+  // Handle reference values
+  if ('referenceValue' in a && 'referenceValue' in b) {
+    return a.referenceValue === b.referenceValue
+  }
+
+  // Handle timestamp values
+  if ('timestampValue' in a && 'timestampValue' in b) {
+    const aTs = a.timestampValue
+    const bTs = b.timestampValue
+
+    // Both are strings
+    if (typeof aTs === 'string' && typeof bTs === 'string') {
+      return aTs === bTs
+    }
+
+    // Both are objects with seconds/nanos
+    if (typeof aTs === 'object' && typeof bTs === 'object' && aTs !== null && bTs !== null) {
+      const aTsObj = aTs as { seconds?: string | number; nanos?: number }
+      const bTsObj = bTs as { seconds?: string | number; nanos?: number }
+      const aSeconds = Number(aTsObj.seconds || 0)
+      const bSeconds = Number(bTsObj.seconds || 0)
+      const aNanos = aTsObj.nanos || 0
+      const bNanos = bTsObj.nanos || 0
+      return aSeconds === bSeconds && aNanos === bNanos
+    }
+
+    // Mixed types - convert both to milliseconds for comparison
+    const getMs = (ts: string | { seconds?: string | number; nanos?: number }) => {
+      if (typeof ts === 'string') {
+        return new Date(ts).getTime()
+      }
+      const seconds = Number(ts.seconds || 0)
+      const nanos = ts.nanos || 0
+      return seconds * 1000 + nanos / 1000000
+    }
+    return getMs(aTs!) === getMs(bTs!)
+  }
+
+  // Handle GeoPoint values
+  if ('geoPointValue' in a && 'geoPointValue' in b) {
+    const aGeo = a.geoPointValue
+    const bGeo = b.geoPointValue
+    if (!aGeo || !bGeo) {
+      return aGeo === bGeo
+    }
+    return aGeo.latitude === bGeo.latitude && aGeo.longitude === bGeo.longitude
+  }
+
+  // Handle array values
+  if ('arrayValue' in a && 'arrayValue' in b) {
+    const aArr = a.arrayValue?.values || []
+    const bArr = b.arrayValue?.values || []
+    if (aArr.length !== bArr.length) {
+      return false
+    }
+    return aArr.every((val, i) => valuesAreEqual(val, bArr[i]))
+  }
+
+  // Handle map values
+  if ('mapValue' in a && 'mapValue' in b) {
+    const aFields = a.mapValue?.fields || {}
+    const bFields = b.mapValue?.fields || {}
+    const aKeys = Object.keys(aFields)
+    const bKeys = Object.keys(bFields)
+    if (aKeys.length !== bKeys.length) {
+      return false
+    }
+    return aKeys.every(key => {
+      if (!(key in bFields)) return false
+      return valuesAreEqual(aFields[key], bFields[key])
+    })
+  }
+
+  // Different types or unknown types
+  return false
 }
 
 /**
@@ -985,11 +1131,13 @@ export async function commit(request: CommitRequest): Promise<{ status: number; 
         }
       }
 
-      // Check for conflicts
+      // Check for conflicts using full document comparison
+      // This ensures we detect all concurrent modifications, not just updateTime changes
       for (const [path, snapshot] of transaction.readSnapshot.entries()) {
         const current = store.get(path)
         // Check if document has been modified since we read it
-        if ((snapshot?.updateTime || null) !== (current?.updateTime || null)) {
+        // Using documentsEqual for proper SERIALIZABLE isolation semantics
+        if (!documentsEqual(snapshot, current)) {
           return {
             status: 409,
             body: {

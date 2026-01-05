@@ -131,7 +131,26 @@ export interface SendOobCodeResponse {
   email: string
 }
 
-const PROJECT_ID = 'test-project'
+// Configurable project ID with a default value
+let projectId = process.env.FIREBASE_projectId || 'test-project'
+
+/**
+ * Sets the project ID for the identity toolkit.
+ * This should be called before any auth operations.
+ */
+export function setProjectId(id: string): void {
+  if (!id || id.trim() === '') {
+    throw new Error('Project ID cannot be empty')
+  }
+  projectId = id
+}
+
+/**
+ * Gets the current project ID.
+ */
+export function getProjectId(): string {
+  return projectId
+}
 
 function createError(message: string, code: number = 400): IdentityToolkitError {
   return {
@@ -196,7 +215,7 @@ export async function handleSignUp(
   // Generate tokens
   const idToken = await generateFirebaseToken({
     uid: user.localId,
-    projectId: PROJECT_ID,
+    projectId: projectId,
     email: user.email,
     emailVerified: user.emailVerified,
     displayName: user.displayName,
@@ -233,6 +252,11 @@ export async function handleSignInWithPassword(
     return createError('EMAIL_NOT_FOUND')
   }
 
+  // Check if account is disabled
+  if (user.disabled) {
+    return createError('USER_DISABLED')
+  }
+
   // Verify password
   if (!user.passwordHash || !user.passwordSalt) {
     return createError('INVALID_PASSWORD')
@@ -248,7 +272,7 @@ export async function handleSignInWithPassword(
   // Generate tokens
   const idToken = await generateFirebaseToken({
     uid: user.localId,
-    projectId: PROJECT_ID,
+    projectId: projectId,
     email: user.email,
     emailVerified: user.emailVerified,
     displayName: user.displayName,
@@ -277,7 +301,7 @@ export async function handleLookup(
   }
 
   try {
-    const payload = await verifyFirebaseToken(request.idToken, PROJECT_ID)
+    const payload = await verifyFirebaseToken(request.idToken, projectId)
     const user = getUserById(payload.user_id)
 
     if (!user) {
@@ -321,7 +345,7 @@ export async function handleUpdate(
 
   let payload
   try {
-    payload = await verifyFirebaseToken(request.idToken, PROJECT_ID)
+    payload = await verifyFirebaseToken(request.idToken, projectId)
   } catch (error) {
     if (error instanceof Error) {
       return createError(error.message)
@@ -332,6 +356,11 @@ export async function handleUpdate(
   const user = getUserById(payload.user_id)
   if (!user) {
     return createError('INVALID_ID_TOKEN')
+  }
+
+  // Check if account is disabled
+  if (user.disabled) {
+    return createError('USER_DISABLED')
   }
 
   // Check if email is already in use
@@ -394,7 +423,7 @@ export async function handleUpdate(
   if (request.returnSecureToken || request.password) {
     const idToken = await generateFirebaseToken({
       uid: updatedUser.localId,
-      projectId: PROJECT_ID,
+      projectId: projectId,
       email: updatedUser.email,
       emailVerified: updatedUser.emailVerified,
       displayName: updatedUser.displayName,
@@ -420,12 +449,22 @@ export async function handleDelete(
 
   let payload
   try {
-    payload = await verifyFirebaseToken(request.idToken, PROJECT_ID)
+    payload = await verifyFirebaseToken(request.idToken, projectId)
   } catch (error) {
     if (error instanceof Error) {
       return createError(error.message)
     }
     return createError('INVALID_ID_TOKEN')
+  }
+
+  const user = getUserById(payload.user_id)
+  if (!user) {
+    return createError('INVALID_ID_TOKEN')
+  }
+
+  // Check if account is disabled
+  if (user.disabled) {
+    return createError('USER_DISABLED')
   }
 
   const deleted = deleteUser(payload.user_id)
@@ -454,7 +493,7 @@ export async function handleSendOobCode(
 
     let payload
     try {
-      payload = await verifyFirebaseToken(request.idToken, PROJECT_ID)
+      payload = await verifyFirebaseToken(request.idToken, projectId)
     } catch (error) {
       if (error instanceof Error) {
         return createError(error.message)
@@ -465,6 +504,11 @@ export async function handleSendOobCode(
     const user = getUserById(payload.user_id)
     if (!user) {
       return createError('INVALID_ID_TOKEN')
+    }
+
+    // Check if account is disabled
+    if (user.disabled) {
+      return createError('USER_DISABLED')
     }
 
     return {
@@ -481,6 +525,11 @@ export async function handleSendOobCode(
     const user = getUserByEmail(request.email)
     if (!user) {
       return createError('EMAIL_NOT_FOUND')
+    }
+
+    // Check if account is disabled
+    if (user.disabled) {
+      return createError('USER_DISABLED')
     }
 
     return {

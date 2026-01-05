@@ -7,9 +7,10 @@
  * @see https://firebase.google.com/docs/reference/rest/storage/rest/v1/objects
  */
 
-import { createHash } from 'crypto'
+import { createHash, createHmac } from 'crypto'
 import {
   getStorageConfig,
+  getUrlSigningSecret,
   StorageConfigErrors,
 } from './config.js'
 
@@ -633,22 +634,37 @@ export async function downloadObject(
   }
 
   // Handle range requests
+  // Implements RFC 7233 range requests:
+  // - bytes=0-499: first 500 bytes
+  // - bytes=500-999: second 500 bytes
+  // - bytes=-500: last 500 bytes (suffix-length)
+  // - bytes=9500-: bytes from 9500 to end
   let data = objectData
   let isPartial = false
   let contentRange: string | undefined
 
   if (options?.rangeStart !== undefined || options?.rangeEnd !== undefined) {
     const totalSize = objectData.length
-    let start = options.rangeStart ?? 0
-    let end = options.rangeEnd ?? totalSize - 1
+    let start: number
+    let end: number
 
-    // Handle negative rangeStart (suffix range)
-    if (start < 0) {
-      start = Math.max(0, totalSize + start)
+    if (options.rangeStart !== undefined && options.rangeStart < 0) {
+      // Suffix-length format: negative rangeStart means "last N bytes"
+      // e.g., rangeStart=-500 means last 500 bytes
+      const suffixLength = Math.abs(options.rangeStart)
+      start = Math.max(0, totalSize - suffixLength)
       end = totalSize - 1
+    } else if (options.rangeStart === undefined && options.rangeEnd !== undefined) {
+      // Only rangeEnd provided: bytes from 0 to rangeEnd (inclusive)
+      start = 0
+      end = Math.min(options.rangeEnd, totalSize - 1)
+    } else {
+      // Normal range: rangeStart to rangeEnd (or end of file)
+      start = options.rangeStart ?? 0
+      end = options.rangeEnd ?? totalSize - 1
     }
 
-    // Validate range
+    // Validate range - start must be within file bounds
     if (start >= totalSize) {
       throw new StorageError(
         StorageErrorCode.INVALID_ARGUMENT,
@@ -660,6 +676,16 @@ export async function downloadObject(
 
     // Clamp end to file size
     end = Math.min(end, totalSize - 1)
+
+    // Validate that start <= end
+    if (start > end) {
+      throw new StorageError(
+        StorageErrorCode.INVALID_ARGUMENT,
+        'Range not satisfiable: start exceeds end',
+        416,
+        { rangeStart: start, rangeEnd: end, size: totalSize }
+      )
+    }
 
     data = objectData.slice(start, end + 1)
     isPartial = true
@@ -1145,7 +1171,17 @@ export function detectContentType(
 }
 
 /**
- * Generate a signed download URL for an object
+ * Generate a signed download URL for an object.
+ *
+ * Uses HMAC-SHA256 for secure URL signing. The signature includes:
+ * - HTTP method (GET)
+ * - Bucket name
+ * - Object path
+ * - Expiration timestamp
+ * - Object generation (prevents use after object is replaced)
+ *
+ * This ensures URLs cannot be forged without the signing secret and
+ * become invalid after the object is modified.
  */
 export async function getDownloadUrl(
   bucket: string,
@@ -1173,13 +1209,26 @@ export async function getDownloadUrl(
     )
   }
 
-  // Check if object exists
+  // Check if object exists and get its generation
   const metadata = await getMetadata(bucket, path)
 
-  // Generate signature (simplified - in production use proper signing)
+  // Calculate expiration timestamp
   const expires = Math.floor(Date.now() / 1000) + expiresIn
-  const signature = createHash('sha256')
-    .update(`${bucket}/${path}/${expires}`)
+
+  // Build the string to sign (canonical request format)
+  // Including generation ensures URL becomes invalid if object is replaced
+  const stringToSign = [
+    'GET',                    // HTTP method
+    bucket,                   // Bucket name
+    path,                     // Object path
+    expires.toString(),       // Expiration timestamp
+    metadata.generation,      // Object generation (version)
+  ].join('\n')
+
+  // Generate HMAC-SHA256 signature using the configured or generated secret
+  const signingSecret = getUrlSigningSecret()
+  const signature = createHmac('sha256', signingSecret)
+    .update(stringToSign)
     .digest('hex')
 
   const encodedPath = encodeURIComponent(path).replace(/%2F/g, '/')

@@ -5,6 +5,46 @@
  * cleanup intervals, and other operational parameters.
  */
 
+import { verifyFirebaseToken, type VerifiedTokenPayload } from '../auth/jwt.js'
+
+// ============================================================================
+// Auth Context Types
+// ============================================================================
+
+/**
+ * Security mode for storage access control
+ */
+export type StorageSecurityMode =
+  | 'open'           // No authentication required (for development/testing)
+  | 'authenticated'  // Requires valid Firebase auth token
+  | 'rules'          // Evaluates Firebase Security Rules (most restrictive)
+
+/**
+ * Authentication context for storage operations
+ */
+export interface StorageAuthContext {
+  /** Authenticated user ID */
+  uid: string
+  /** User email (if available) */
+  email?: string
+  /** Whether email is verified */
+  emailVerified?: boolean
+  /** Custom claims from the JWT token */
+  claims?: Record<string, unknown>
+  /** Raw verified token payload */
+  token: VerifiedTokenPayload
+}
+
+/**
+ * Result of auth verification
+ */
+export interface AuthVerificationResult {
+  success: boolean
+  auth?: StorageAuthContext
+  error?: string
+  httpStatus?: number
+}
+
 // ============================================================================
 // Configuration Interface
 // ============================================================================
@@ -13,6 +53,26 @@
  * Configuration options for the storage emulator
  */
 export interface StorageConfig {
+  /**
+   * Security mode for access control (default: 'open')
+   * - 'open': No authentication required (development mode)
+   * - 'authenticated': Requires valid Firebase auth token
+   * - 'rules': Evaluates Firebase Security Rules
+   */
+  securityMode: StorageSecurityMode
+
+  /**
+   * Firebase project ID for token verification
+   */
+  projectId?: string
+
+  /**
+   * Secret key for signing download URLs (HMAC-SHA256)
+   * If not provided, a random key will be generated on startup.
+   * In production, this should be set to a persistent secret.
+   */
+  urlSigningSecret?: string
+
   /**
    * Maximum size in bytes for a single upload (default: 100MB)
    * Uploads exceeding this limit will be rejected with RESOURCE_EXHAUSTED
@@ -67,6 +127,15 @@ export interface StorageConfig {
  * Default storage configuration values
  */
 export const DEFAULT_CONFIG: StorageConfig = {
+  // Open security mode by default (for development/emulator)
+  securityMode: 'open',
+
+  // Project ID (should be set in production)
+  projectId: undefined,
+
+  // URL signing secret (generated on first use if not provided)
+  urlSigningSecret: undefined,
+
   // 100MB max upload size for simple uploads
   maxUploadSizeBytes: 100 * 1024 * 1024,
 
@@ -170,6 +239,46 @@ export function resetMemoryTracking(): void {
 }
 
 // ============================================================================
+// URL Signing Secret
+// ============================================================================
+
+import { randomBytes } from 'crypto'
+
+/**
+ * Cached generated signing secret (for when none is configured)
+ */
+let generatedSigningSecret: string | null = null
+
+/**
+ * Gets the URL signing secret, generating one if not configured.
+ * The secret is used for HMAC-SHA256 signing of download URLs.
+ *
+ * @returns The URL signing secret (32 bytes, hex-encoded = 64 chars)
+ */
+export function getUrlSigningSecret(): string {
+  const config = getStorageConfig()
+
+  // Use configured secret if available
+  if (config.urlSigningSecret) {
+    return config.urlSigningSecret
+  }
+
+  // Generate a random secret if not configured (persists for session)
+  if (!generatedSigningSecret) {
+    generatedSigningSecret = randomBytes(32).toString('hex')
+  }
+
+  return generatedSigningSecret
+}
+
+/**
+ * Reset the generated signing secret (for testing)
+ */
+export function resetUrlSigningSecret(): void {
+  generatedSigningSecret = null
+}
+
+// ============================================================================
 // Error Messages
 // ============================================================================
 
@@ -195,4 +304,168 @@ function formatBytes(bytes: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(1024))
   return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${units[i]}`
+}
+
+// ============================================================================
+// Auth Verification
+// ============================================================================
+
+/**
+ * Verify a Firebase auth token and return auth context
+ *
+ * @param authHeader - Authorization header value (e.g., "Bearer <token>")
+ * @returns Auth verification result with context on success
+ */
+export async function verifyStorageAuth(
+  authHeader?: string
+): Promise<AuthVerificationResult> {
+  const config = getStorageConfig()
+
+  // In 'open' mode, no auth required
+  if (config.securityMode === 'open') {
+    return { success: true }
+  }
+
+  // Check for auth header
+  if (!authHeader) {
+    return {
+      success: false,
+      error: 'Authentication required',
+      httpStatus: 401,
+    }
+  }
+
+  // Parse Bearer token
+  const match = authHeader.match(/^Bearer\s+(.+)$/i)
+  if (!match) {
+    return {
+      success: false,
+      error: 'Invalid authorization header format',
+      httpStatus: 401,
+    }
+  }
+
+  const token = match[1]
+
+  // Need project ID for token verification
+  if (!config.projectId) {
+    return {
+      success: false,
+      error: 'Storage not configured: missing projectId',
+      httpStatus: 500,
+    }
+  }
+
+  try {
+    const payload = await verifyFirebaseToken(token, config.projectId)
+
+    const auth: StorageAuthContext = {
+      uid: payload.user_id,
+      email: payload.email,
+      emailVerified: payload.email_verified,
+      claims: Object.fromEntries(
+        Object.entries(payload).filter(
+          ([key]) => !['iss', 'aud', 'sub', 'user_id', 'exp', 'iat', 'auth_time', 'firebase'].includes(key)
+        )
+      ),
+      token: payload,
+    }
+
+    return { success: true, auth }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Token verification failed'
+
+    if (message === 'TOKEN_EXPIRED') {
+      return {
+        success: false,
+        error: 'Token expired',
+        httpStatus: 401,
+      }
+    }
+
+    return {
+      success: false,
+      error: message,
+      httpStatus: 401,
+    }
+  }
+}
+
+/**
+ * Check if operation is allowed based on security mode and auth context
+ *
+ * @param operation - The operation being performed (read, write, delete)
+ * @param bucket - The bucket name
+ * @param path - The object path
+ * @param auth - Optional auth context
+ * @returns Whether the operation is allowed
+ */
+export function checkStoragePermission(
+  operation: 'read' | 'write' | 'delete',
+  bucket: string,
+  path: string,
+  auth?: StorageAuthContext
+): { allowed: boolean; error?: string; httpStatus?: number } {
+  const config = getStorageConfig()
+
+  // Open mode: everything allowed
+  if (config.securityMode === 'open') {
+    return { allowed: true }
+  }
+
+  // Authenticated mode: just check that user is authenticated
+  if (config.securityMode === 'authenticated') {
+    if (!auth) {
+      return {
+        allowed: false,
+        error: 'Authentication required',
+        httpStatus: 401,
+      }
+    }
+    return { allowed: true }
+  }
+
+  // Rules mode: evaluate Firebase Security Rules
+  // For now, implement basic owner-based rules
+  // Full rules evaluation would integrate with src/rules/evaluator.ts
+  if (config.securityMode === 'rules') {
+    if (!auth) {
+      return {
+        allowed: false,
+        error: 'Authentication required',
+        httpStatus: 401,
+      }
+    }
+
+    // Basic rule: users can only access objects under their UID path
+    // e.g., users/{uid}/** is writable/readable by that user
+    const userPathMatch = path.match(/^users\/([^\/]+)\//)
+    if (userPathMatch) {
+      if (userPathMatch[1] !== auth.uid) {
+        return {
+          allowed: false,
+          error: `Permission denied: cannot ${operation} other user's files`,
+          httpStatus: 403,
+        }
+      }
+    }
+
+    // Public read paths (e.g., public/**)
+    if (path.startsWith('public/') && operation === 'read') {
+      return { allowed: true }
+    }
+
+    // Default: require matching user path for write/delete
+    if (operation !== 'read' && !userPathMatch) {
+      return {
+        allowed: false,
+        error: 'Permission denied: no write access to this path',
+        httpStatus: 403,
+      }
+    }
+
+    return { allowed: true }
+  }
+
+  return { allowed: true }
 }
