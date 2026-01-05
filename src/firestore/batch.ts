@@ -14,6 +14,14 @@
  */
 
 import { Value } from './values'
+import {
+  Document,
+  getDocumentRaw,
+  setDocumentRaw,
+  deleteDocumentRaw,
+  documentExists,
+  getAllDocuments,
+} from './crud'
 
 // ============================================================================
 // Type Definitions
@@ -221,91 +229,203 @@ export interface RollbackRequest {
 // ============================================================================
 
 /**
- * Transaction state
+ * Default transaction timeout in milliseconds (60 seconds)
+ * Firebase Firestore transactions have a similar timeout.
+ */
+const TRANSACTION_TIMEOUT_MS = 60000
+
+/**
+ * Transaction state with snapshot isolation support
  */
 interface TransactionState {
   /** Unique transaction ID */
   id: string
   /** Whether this is read-only */
   readOnly: boolean
-  /** Timestamp when transaction started */
+  /** Timestamp when transaction started (ISO string) */
   startTime: string
-  /** Snapshot of documents read in this transaction */
+  /** Timestamp when transaction started (ms since epoch for timeout checking) */
+  startTimeMs: number
+  /**
+   * Snapshot of documents read in this transaction.
+   * This tracks which documents have been read to detect conflicts at commit time.
+   */
   readSnapshot: Map<string, FirestoreDocument | null>
+  /**
+   * Global snapshot of all documents at transaction start time.
+   * Used for snapshot isolation - ensures all reads see a consistent view.
+   * This is a deep copy of documents at transaction start.
+   */
+  globalSnapshot: Map<string, FirestoreDocument>
   /** Whether the transaction has been committed */
   committed: boolean
   /** Whether the transaction has been rolled back */
   rolledBack: boolean
+  /** Timeout handle for auto-rollback */
+  timeoutHandle?: ReturnType<typeof setTimeout>
 }
 
 /**
- * In-memory document storage
- * In a real implementation, this would be backed by Cloudflare Durable Objects or KV
+ * Deep clone a FirestoreDocument to ensure snapshot isolation
  */
-class DocumentStore {
-  private documents = new Map<string, FirestoreDocument>()
+function cloneDocument(doc: FirestoreDocument): FirestoreDocument {
+  return JSON.parse(JSON.stringify(doc))
+}
+
+/**
+ * Transaction management store
+ * Document storage is delegated to crud.ts for a single source of truth
+ */
+class TransactionStore {
   private transactions = new Map<string, TransactionState>()
 
   /**
-   * Get a document by path
+   * Get a document by path (delegates to crud.ts)
    */
   get(path: string): FirestoreDocument | null {
-    return this.documents.get(path) || null
+    return getDocumentRaw(path) as FirestoreDocument | null
   }
 
   /**
-   * Set a document
+   * Set a document (delegates to crud.ts)
    */
   set(path: string, doc: FirestoreDocument): void {
-    this.documents.set(path, doc)
+    setDocumentRaw(path, doc as Document)
   }
 
   /**
-   * Delete a document
+   * Delete a document (delegates to crud.ts)
    */
   delete(path: string): void {
-    this.documents.delete(path)
+    deleteDocumentRaw(path)
   }
 
   /**
-   * Check if document exists
+   * Check if document exists (delegates to crud.ts)
    */
   exists(path: string): boolean {
-    return this.documents.has(path)
+    return documentExists(path)
   }
 
   /**
-   * Create a new transaction
+   * Create a new transaction with snapshot isolation.
+   * Takes a snapshot of all documents at transaction start for consistent reads.
    */
   createTransaction(id: string, readOnly: boolean): TransactionState {
+    const now = Date.now()
+
+    // Take a snapshot of all documents for snapshot isolation
+    const allDocs = getAllDocuments()
+    const globalSnapshot = new Map<string, FirestoreDocument>()
+    for (const [path, doc] of allDocs.entries()) {
+      // Deep clone to ensure isolation from concurrent modifications
+      globalSnapshot.set(path, cloneDocument(doc as FirestoreDocument))
+    }
+
     const state: TransactionState = {
       id,
       readOnly,
-      startTime: new Date().toISOString(),
+      startTime: new Date(now).toISOString(),
+      startTimeMs: now,
       readSnapshot: new Map(),
+      globalSnapshot,
       committed: false,
       rolledBack: false,
     }
+
+    // Set up timeout for auto-rollback
+    state.timeoutHandle = setTimeout(() => {
+      this.handleTransactionTimeout(id)
+    }, TRANSACTION_TIMEOUT_MS)
+
     this.transactions.set(id, state)
     return state
+  }
+
+  /**
+   * Handle transaction timeout - auto-rollback expired transactions
+   */
+  private handleTransactionTimeout(id: string): void {
+    const tx = this.transactions.get(id)
+    if (tx && !tx.committed && !tx.rolledBack) {
+      tx.rolledBack = true
+      // Clean up the transaction state
+      this.cleanupTransaction(id)
+    }
+  }
+
+  /**
+   * Check if a transaction has timed out
+   */
+  isTransactionExpired(id: string): boolean {
+    const tx = this.transactions.get(id)
+    if (!tx) return true
+    return Date.now() - tx.startTimeMs > TRANSACTION_TIMEOUT_MS
   }
 
   /**
    * Get transaction state
    */
   getTransaction(id: string): TransactionState | null {
-    return this.transactions.get(id) || null
+    const tx = this.transactions.get(id) || null
+    if (tx && this.isTransactionExpired(id) && !tx.committed && !tx.rolledBack) {
+      // Mark as rolled back if expired
+      tx.rolledBack = true
+    }
+    return tx
   }
 
   /**
-   * Remove transaction from storage
+   * Clean up transaction resources
+   */
+  cleanupTransaction(id: string): void {
+    const tx = this.transactions.get(id)
+    if (tx) {
+      // Clear the timeout if it exists
+      if (tx.timeoutHandle) {
+        clearTimeout(tx.timeoutHandle)
+        tx.timeoutHandle = undefined
+      }
+      // Clear the snapshots to free memory
+      tx.readSnapshot.clear()
+      tx.globalSnapshot.clear()
+      // Remove from active transactions
+      this.transactions.delete(id)
+    }
+  }
+
+  /**
+   * Mark transaction as committed and clean up
+   */
+  commitTransaction(id: string): void {
+    const tx = this.transactions.get(id)
+    if (tx) {
+      tx.committed = true
+      this.cleanupTransaction(id)
+    }
+  }
+
+  /**
+   * Mark transaction as rolled back and clean up
+   */
+  rollbackTransaction(id: string): void {
+    const tx = this.transactions.get(id)
+    if (tx) {
+      tx.rolledBack = true
+      this.cleanupTransaction(id)
+    }
+  }
+
+  /**
+   * Remove transaction from storage (deprecated - use cleanupTransaction)
    */
   deleteTransaction(id: string): void {
-    this.transactions.delete(id)
+    this.cleanupTransaction(id)
   }
 
   /**
-   * Read document within transaction context
+   * Read document within transaction context with snapshot isolation.
+   * Reads from the snapshot taken at transaction start, ensuring consistent reads.
    */
   readInTransaction(txId: string, path: string): FirestoreDocument | null {
     const tx = this.transactions.get(txId)
@@ -313,20 +433,25 @@ class DocumentStore {
       return null
     }
 
-    // Check if already read in this transaction
+    // Check if already recorded in readSnapshot (for conflict detection)
     if (tx.readSnapshot.has(path)) {
       return tx.readSnapshot.get(path) || null
     }
 
-    // Read document and add to snapshot
-    const doc = this.get(path)
+    // Read from the global snapshot for consistency (snapshot isolation)
+    // This ensures we always read the same value regardless of concurrent writes
+    const snapshotDoc = tx.globalSnapshot.get(path)
+    const doc = snapshotDoc ? cloneDocument(snapshotDoc) : null
+
+    // Record in readSnapshot for conflict detection at commit time
     tx.readSnapshot.set(path, doc)
+
     return doc
   }
 }
 
-// Global document store (in production, this would be Durable Objects)
-const store = new DocumentStore()
+// Global transaction store - document storage is handled by crud.ts
+const store = new TransactionStore()
 
 // ============================================================================
 // Validation Helpers
@@ -1099,9 +1224,9 @@ export async function commit(request: CommitRequest): Promise<{ status: number; 
       }
     }
 
-    // Mark transaction as committed if applicable
+    // Mark transaction as committed and clean up if applicable
     if (transaction) {
-      transaction.committed = true
+      store.commitTransaction(transaction.id)
     }
 
     return {
@@ -1219,7 +1344,8 @@ export async function rollback(request: RollbackRequest): Promise<{ status: numb
       }
     }
 
-    transaction.rolledBack = true
+    // Mark as rolled back and clean up transaction state
+    store.rollbackTransaction(request.transaction)
 
     return {
       status: 200,

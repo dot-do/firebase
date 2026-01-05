@@ -78,9 +78,49 @@ export interface FirestoreError {
 }
 
 /**
- * In-memory document storage
+ * In-memory document storage - shared across all Firestore operations
  */
 const documentStore = new Map<string, Document>()
+
+/**
+ * Get a raw document directly from the store (for internal use by batch.ts)
+ * Unlike getDocument(), this returns the actual stored document without copying
+ *
+ * @param path - Full document path
+ * @returns The document if found, or null if not found
+ */
+export function getDocumentRaw(path: string): Document | null {
+  return documentStore.get(path) || null
+}
+
+/**
+ * Set a document directly in the store (for internal use by batch.ts)
+ *
+ * @param path - Full document path
+ * @param doc - The document to store
+ */
+export function setDocumentRaw(path: string, doc: Document): void {
+  documentStore.set(path, doc)
+}
+
+/**
+ * Delete a document directly from the store (for internal use by batch.ts)
+ *
+ * @param path - Full document path
+ */
+export function deleteDocumentRaw(path: string): void {
+  documentStore.delete(path)
+}
+
+/**
+ * Check if a document exists in the store
+ *
+ * @param path - Full document path
+ * @returns true if document exists
+ */
+export function documentExists(path: string): boolean {
+  return documentStore.has(path)
+}
 
 /**
  * Get a document by its path

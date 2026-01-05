@@ -32,8 +32,14 @@ export {
   rotateSigningKey,
   generateFirebaseToken,
   verifyFirebaseToken,
+  fetchGooglePublicKeys,
+  clearGooglePublicKeyCache,
+  setVerificationMode,
+  getVerificationMode,
   type GenerateTokenOptions,
   type VerifiedTokenPayload,
+  type VerifyTokenOptions,
+  type VerificationMode,
 } from './jwt.js'
 
 // User management

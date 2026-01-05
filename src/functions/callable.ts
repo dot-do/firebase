@@ -9,6 +9,8 @@
  * @see https://firebase.google.com/docs/functions/callable-reference
  */
 
+import { verifyFirebaseToken, type VerifiedTokenPayload } from '../auth/jwt.js'
+
 export interface CallableRequest {
   method: string
   headers: Record<string, string>
@@ -21,11 +23,19 @@ export interface CallableResponse {
   body: unknown
 }
 
+export interface CallableAuthContext {
+  token: string
+  uid: string
+  email?: string
+  emailVerified?: boolean
+  name?: string
+  picture?: string
+  signInProvider: string
+  claims: Record<string, unknown>
+}
+
 export interface CallableContext {
-  auth: {
-    token: string
-    uid?: string
-  } | null
+  auth: CallableAuthContext | null
 }
 
 export type CallableFunction = (data: unknown, context: CallableContext) => Promise<unknown> | unknown
@@ -85,10 +95,34 @@ function getPayloadSize(data: unknown): number {
   return JSON.stringify(data).length
 }
 
+// Default project ID for token verification (can be overridden via setProjectId)
+let configuredProjectId: string = 'demo-project'
+
 /**
- * Parse Authorization header and extract Bearer token
+ * Set the project ID used for token verification
  */
-function parseAuthHeader(authHeader: string | undefined): CallableContext['auth'] {
+export function setProjectId(projectId: string): void {
+  configuredProjectId = projectId
+}
+
+/**
+ * Get the current project ID
+ */
+export function getProjectId(): string {
+  return configuredProjectId
+}
+
+/**
+ * Parse Authorization header and verify JWT token
+ *
+ * Extracts the Bearer token from the Authorization header and verifies it
+ * using the auth module's verifyFirebaseToken function.
+ *
+ * @param authHeader - The Authorization header value
+ * @returns The authenticated user context or null if no auth header
+ * @throws CallableError with UNAUTHENTICATED if token is invalid
+ */
+async function parseAuthHeader(authHeader: string | undefined): Promise<CallableAuthContext | null> {
   if (!authHeader) {
     return null
   }
@@ -100,12 +134,60 @@ function parseAuthHeader(authHeader: string | undefined): CallableContext['auth'
 
   const token = parts[1]
 
-  // Validate token format (basic validation)
-  if (!token || token === 'invalid.token.here') {
+  // Basic token validation
+  if (!token) {
     throw new CallableError('UNAUTHENTICATED', 'Invalid or expired token')
   }
 
-  return { token }
+  // Verify the JWT token using the auth module
+  try {
+    const payload = await verifyFirebaseToken(token, configuredProjectId)
+
+    // Extract user info from the verified token payload
+    // user_id and sub are always the same in Firebase tokens (user UID)
+    return {
+      token,
+      uid: payload.user_id,
+      email: payload.email,
+      emailVerified: payload.email_verified,
+      name: payload.name,
+      picture: payload.picture,
+      signInProvider: payload.firebase?.sign_in_provider || 'custom',
+      claims: extractCustomClaims(payload),
+    }
+  } catch (error) {
+    // Handle specific JWT verification errors
+    if (error instanceof Error) {
+      if (error.message === 'TOKEN_EXPIRED') {
+        throw new CallableError('UNAUTHENTICATED', 'Token has expired')
+      }
+      if (error.message === 'INVALID_ID_TOKEN') {
+        throw new CallableError('UNAUTHENTICATED', 'Invalid or expired token')
+      }
+    }
+    throw new CallableError('UNAUTHENTICATED', 'Invalid or expired token')
+  }
+}
+
+/**
+ * Extract custom claims from a verified token payload
+ *
+ * Filters out standard Firebase/JWT claims to return only custom claims
+ */
+function extractCustomClaims(payload: VerifiedTokenPayload): Record<string, unknown> {
+  const standardClaims = new Set([
+    'iss', 'aud', 'sub', 'user_id', 'auth_time', 'iat', 'exp',
+    'email', 'email_verified', 'phone_number', 'name', 'picture', 'firebase'
+  ])
+
+  const customClaims: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(payload)) {
+    if (!standardClaims.has(key)) {
+      customClaims[key] = value
+    }
+  }
+
+  return customClaims
 }
 
 /**
@@ -287,8 +369,8 @@ export async function handleCallable(
       throw new CallableError('NOT_FOUND', `Function "${functionName}" not found`)
     }
 
-    // Parse authorization header
-    const auth = parseAuthHeader(request.headers['authorization'])
+    // Parse and verify authorization header
+    const auth = await parseAuthHeader(request.headers['authorization'])
 
     // Extract data from request body
     const body = request.body as { data: unknown }

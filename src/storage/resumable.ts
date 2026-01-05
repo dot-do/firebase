@@ -6,9 +6,23 @@
  * large files to be uploaded in chunks with the ability to resume
  * interrupted uploads.
  *
+ * Memory Management:
+ * - Tracks total memory usage across all active upload sessions
+ * - Rejects new uploads when memory limits are exceeded
+ * - Automatically cleans up stale sessions to free memory
+ * - Processes chunks incrementally to avoid large memory spikes
+ *
  * @see https://cloud.google.com/storage/docs/resumable-uploads
  * @see https://firebase.google.com/docs/storage/web/upload-files
  */
+
+import {
+  getStorageConfig,
+  allocateResumableMemory,
+  releaseResumableMemory,
+  getResumableMemoryUsage,
+  StorageConfigErrors,
+} from './config.js'
 
 // ============================================================================
 // Types
@@ -260,10 +274,13 @@ interface UploadSession {
   metadata: Record<string, string>
   startedAt: Date
   expiresAt: Date
+  lastActivityAt: Date
   active: boolean
   canceled: boolean
   completed: boolean
   chunks: Uint8Array[]
+  /** Total memory allocated for this session's chunks */
+  allocatedMemory: number
   predefinedAcl?: string
   origin?: string
   completedMetadata?: CompletedUploadMetadata
@@ -273,6 +290,16 @@ interface UploadSession {
  * In-memory storage for upload sessions
  */
 const uploadSessions = new Map<string, UploadSession>()
+
+/**
+ * Reference to the cleanup timer (if enabled)
+ */
+let cleanupTimer: ReturnType<typeof setInterval> | null = null
+
+/**
+ * Tracks whether cleanup has been started
+ */
+let cleanupStarted = false
 
 // ============================================================================
 // Helper Functions
@@ -512,6 +539,32 @@ export async function initiateResumableUpload(
   // Validate options
   validateInitiateOptions(options)
 
+  const config = getStorageConfig()
+
+  // Check if we've exceeded the maximum number of concurrent sessions
+  const activeSessionCount = Array.from(uploadSessions.values()).filter(
+    s => s.active && !s.completed && !s.canceled
+  ).length
+  if (activeSessionCount >= config.maxConcurrentResumableSessions) {
+    throw new ResumableUploadError(
+      ResumableUploadErrorCode.RATE_LIMITED,
+      StorageConfigErrors.MAX_SESSIONS_EXCEEDED(activeSessionCount, config.maxConcurrentResumableSessions)
+    )
+  }
+
+  // Check if the total size exceeds the resumable upload limit
+  if (options.totalSize !== undefined && options.totalSize > config.maxResumableUploadSizeBytes) {
+    throw new ResumableUploadError(
+      ResumableUploadErrorCode.INVALID_REQUEST,
+      StorageConfigErrors.RESUMABLE_UPLOAD_TOO_LARGE(options.totalSize, config.maxResumableUploadSizeBytes)
+    )
+  }
+
+  // Start cleanup timer if enabled and not already started
+  if (config.enableAutoCleanup && !cleanupStarted) {
+    startCleanupTimer()
+  }
+
   // Generate unique upload ID
   const uploadId = generateUploadId()
 
@@ -520,6 +573,7 @@ export async function initiateResumableUpload(
 
   // Calculate expiration time (1 week from now)
   const expiresAt = new Date(Date.now() + UPLOAD_SESSION_DURATION_MS)
+  const now = new Date()
 
   // Store upload session
   const session: UploadSession = {
@@ -531,12 +585,14 @@ export async function initiateResumableUpload(
     totalSize: options.totalSize,
     bytesUploaded: 0,
     metadata: options.metadata || {},
-    startedAt: new Date(),
+    startedAt: now,
     expiresAt,
+    lastActivityAt: now,
     active: true,
     canceled: false,
     completed: false,
     chunks: [],
+    allocatedMemory: 0,
     predefinedAcl: options.predefinedAcl,
     origin: options.origin,
   }
@@ -689,11 +745,29 @@ export async function resumeUpload(
     }
   }
 
-  // Store the chunk
+  // Store the chunk with memory tracking
   if (chunkSize > 0) {
+    // Try to allocate memory for this chunk
+    const config = getStorageConfig()
+    if (!allocateResumableMemory(chunkSize)) {
+      throw new ResumableUploadError(
+        ResumableUploadErrorCode.RATE_LIMITED,
+        StorageConfigErrors.MEMORY_LIMIT_EXCEEDED(
+          getResumableMemoryUsage(),
+          config.maxResumableUploadMemoryBytes
+        ),
+        options.uploadUri,
+        session.bytesUploaded
+      )
+    }
+
     session.chunks.push(data)
     session.bytesUploaded += chunkSize
+    session.allocatedMemory += chunkSize
   }
+
+  // Update last activity time
+  session.lastActivityAt = new Date()
 
   // Update total size if provided
   if (options.totalSize !== undefined && session.totalSize === undefined) {
@@ -720,6 +794,12 @@ export async function resumeUpload(
     session.completed = true
     session.active = false
     session.completedMetadata = metadata
+
+    // Release memory after completion - the data is now "stored"
+    // In a real implementation, this would be written to disk/R2
+    releaseResumableMemory(session.allocatedMemory)
+    session.chunks = [] // Clear chunks to free memory
+    session.allocatedMemory = 0
 
     return {
       bytesUploaded: session.bytesUploaded,
@@ -851,9 +931,17 @@ export async function cancelUpload(
     )
   }
 
-  // Mark as canceled and remove from sessions
+  // Mark as canceled and release memory
   session.canceled = true
   session.active = false
+
+  // Release allocated memory
+  if (session.allocatedMemory > 0) {
+    releaseResumableMemory(session.allocatedMemory)
+    session.chunks = []
+    session.allocatedMemory = 0
+  }
+
   uploadSessions.delete(options.uploadUri)
 }
 
@@ -978,5 +1066,218 @@ export async function completeUpload(
   session.active = false
   session.completedMetadata = metadata
 
+  // Release memory after completion - the data is now "stored"
+  // In a real implementation, this would be written to disk/R2
+  if (session.allocatedMemory > 0) {
+    releaseResumableMemory(session.allocatedMemory)
+    session.chunks = [] // Clear chunks to free memory
+    session.allocatedMemory = 0
+  }
+
   return metadata
+}
+
+// ============================================================================
+// Cleanup Functions
+// ============================================================================
+
+/**
+ * Result of a cleanup operation
+ */
+export interface CleanupResult {
+  /** Number of sessions cleaned up */
+  cleanedSessions: number
+  /** Total memory freed in bytes */
+  freedMemory: number
+  /** URIs of cleaned up sessions */
+  cleanedUris: string[]
+}
+
+/**
+ * Cleans up stale upload sessions.
+ *
+ * Sessions are considered stale if:
+ * - They have expired (past expiresAt)
+ * - They have been idle longer than sessionIdleTimeoutMs
+ *
+ * This function releases memory for stale sessions and removes them from storage.
+ *
+ * @returns Information about the cleanup operation
+ */
+export function cleanupStaleSessions(): CleanupResult {
+  const config = getStorageConfig()
+  const now = Date.now()
+  const cleanedUris: string[] = []
+  let freedMemory = 0
+
+  for (const [uri, session] of uploadSessions.entries()) {
+    // Skip completed uploads (they may be kept for idempotency)
+    if (session.completed) {
+      continue
+    }
+
+    let shouldClean = false
+    let reason = ''
+
+    // Check if session has expired
+    if (now > session.expiresAt.getTime()) {
+      shouldClean = true
+      reason = 'expired'
+    }
+
+    // Check if session has been idle too long
+    if (!shouldClean && session.lastActivityAt) {
+      const idleTime = now - session.lastActivityAt.getTime()
+      if (idleTime > config.sessionIdleTimeoutMs) {
+        shouldClean = true
+        reason = 'idle'
+      }
+    }
+
+    if (shouldClean) {
+      // Release allocated memory
+      if (session.allocatedMemory > 0) {
+        releaseResumableMemory(session.allocatedMemory)
+        freedMemory += session.allocatedMemory
+      }
+
+      // Mark as canceled and remove
+      session.canceled = true
+      session.active = false
+      session.chunks = []
+      session.allocatedMemory = 0
+      uploadSessions.delete(uri)
+      cleanedUris.push(uri)
+    }
+  }
+
+  return {
+    cleanedSessions: cleanedUris.length,
+    freedMemory,
+    cleanedUris,
+  }
+}
+
+/**
+ * Starts the automatic cleanup timer.
+ * The timer runs at the interval specified in config.cleanupIntervalMs
+ */
+export function startCleanupTimer(): void {
+  if (cleanupStarted) {
+    return
+  }
+
+  const config = getStorageConfig()
+
+  if (!config.enableAutoCleanup) {
+    return
+  }
+
+  cleanupTimer = setInterval(() => {
+    cleanupStaleSessions()
+  }, config.cleanupIntervalMs)
+
+  // Don't block process exit
+  if (cleanupTimer.unref) {
+    cleanupTimer.unref()
+  }
+
+  cleanupStarted = true
+}
+
+/**
+ * Stops the automatic cleanup timer.
+ */
+export function stopCleanupTimer(): void {
+  if (cleanupTimer) {
+    clearInterval(cleanupTimer)
+    cleanupTimer = null
+  }
+  cleanupStarted = false
+}
+
+/**
+ * Gets current statistics about upload sessions.
+ * Useful for monitoring and debugging.
+ */
+export function getUploadSessionStats(): {
+  totalSessions: number
+  activeSessions: number
+  completedSessions: number
+  canceledSessions: number
+  totalAllocatedMemory: number
+  sessionDetails: Array<{
+    uploadUri: string
+    bytesUploaded: number
+    allocatedMemory: number
+    ageMs: number
+    idleMs: number
+    status: 'active' | 'completed' | 'canceled' | 'expired'
+  }>
+} {
+  const now = Date.now()
+  let totalAllocatedMemory = 0
+  let activeSessions = 0
+  let completedSessions = 0
+  let canceledSessions = 0
+  const sessionDetails: Array<{
+    uploadUri: string
+    bytesUploaded: number
+    allocatedMemory: number
+    ageMs: number
+    idleMs: number
+    status: 'active' | 'completed' | 'canceled' | 'expired'
+  }> = []
+
+  for (const [uri, session] of uploadSessions.entries()) {
+    totalAllocatedMemory += session.allocatedMemory
+
+    let status: 'active' | 'completed' | 'canceled' | 'expired'
+    if (session.completed) {
+      status = 'completed'
+      completedSessions++
+    } else if (session.canceled) {
+      status = 'canceled'
+      canceledSessions++
+    } else if (now > session.expiresAt.getTime()) {
+      status = 'expired'
+    } else {
+      status = 'active'
+      activeSessions++
+    }
+
+    sessionDetails.push({
+      uploadUri: uri,
+      bytesUploaded: session.bytesUploaded,
+      allocatedMemory: session.allocatedMemory,
+      ageMs: now - session.startedAt.getTime(),
+      idleMs: now - session.lastActivityAt.getTime(),
+      status,
+    })
+  }
+
+  return {
+    totalSessions: uploadSessions.size,
+    activeSessions,
+    completedSessions,
+    canceledSessions,
+    totalAllocatedMemory,
+    sessionDetails,
+  }
+}
+
+/**
+ * Resets all upload sessions (for testing purposes).
+ * This clears all sessions and releases all allocated memory.
+ */
+export function resetUploadSessions(): void {
+  // Release all allocated memory
+  for (const session of uploadSessions.values()) {
+    if (session.allocatedMemory > 0) {
+      releaseResumableMemory(session.allocatedMemory)
+    }
+  }
+
+  uploadSessions.clear()
+  stopCleanupTimer()
 }

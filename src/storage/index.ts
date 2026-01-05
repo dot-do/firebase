@@ -36,6 +36,11 @@ export {
   getUploadStatus,
   cancelUpload,
   completeUpload,
+  cleanupStaleSessions,
+  startCleanupTimer,
+  stopCleanupTimer,
+  getUploadSessionStats,
+  resetUploadSessions,
   ResumableUploadError,
   ResumableUploadErrorCode,
   MIN_CHUNK_SIZE,
@@ -52,4 +57,16 @@ export {
   type CompleteUploadOptions,
   type CompletedUploadMetadata,
   type CancelUploadOptions,
+  type CleanupResult,
 } from './resumable.js'
+
+// Configuration
+export {
+  getStorageConfig,
+  updateStorageConfig,
+  resetStorageConfig,
+  getResumableMemoryUsage,
+  resetMemoryTracking,
+  DEFAULT_CONFIG,
+  type StorageConfig,
+} from './config.js'

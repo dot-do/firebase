@@ -8,6 +8,10 @@
  */
 
 import { createHash } from 'crypto'
+import {
+  getStorageConfig,
+  StorageConfigErrors,
+} from './config.js'
 
 // ============================================================================
 // Types
@@ -342,15 +346,43 @@ function toBuffer(data: Buffer | ArrayBuffer | Blob | ReadableStream<Uint8Array>
 }
 
 async function dataToBuffer(
-  data: Buffer | ArrayBuffer | Blob | ReadableStream<Uint8Array>
+  data: Buffer | ArrayBuffer | Blob | ReadableStream<Uint8Array>,
+  maxSizeBytes?: number
 ): Promise<{ buffer: Buffer; blobType?: string }> {
+  const config = getStorageConfig()
+  const maxSize = maxSizeBytes ?? config.maxUploadSizeBytes
+
   if (Buffer.isBuffer(data)) {
+    if (data.length > maxSize) {
+      throw new StorageError(
+        StorageErrorCode.RESOURCE_EXHAUSTED,
+        StorageConfigErrors.UPLOAD_TOO_LARGE(data.length, maxSize),
+        413,
+        { size: data.length, maxSize }
+      )
+    }
     return { buffer: data }
   }
   if (data instanceof ArrayBuffer) {
+    if (data.byteLength > maxSize) {
+      throw new StorageError(
+        StorageErrorCode.RESOURCE_EXHAUSTED,
+        StorageConfigErrors.UPLOAD_TOO_LARGE(data.byteLength, maxSize),
+        413,
+        { size: data.byteLength, maxSize }
+      )
+    }
     return { buffer: Buffer.from(data) }
   }
   if (data instanceof Blob) {
+    if (data.size > maxSize) {
+      throw new StorageError(
+        StorageErrorCode.RESOURCE_EXHAUSTED,
+        StorageConfigErrors.UPLOAD_TOO_LARGE(data.size, maxSize),
+        413,
+        { size: data.size, maxSize }
+      )
+    }
     const arrayBuffer = await data.arrayBuffer()
     return {
       buffer: Buffer.from(arrayBuffer),
@@ -365,8 +397,21 @@ async function dataToBuffer(
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      chunks.push(value)
+
+      // Check size limit while streaming to prevent OOM
       totalLength += value.length
+      if (totalLength > maxSize) {
+        // Cancel the stream reader before throwing
+        await reader.cancel()
+        throw new StorageError(
+          StorageErrorCode.RESOURCE_EXHAUSTED,
+          StorageConfigErrors.UPLOAD_TOO_LARGE(totalLength, maxSize),
+          413,
+          { size: totalLength, maxSize }
+        )
+      }
+
+      chunks.push(value)
     }
 
     const result = new Uint8Array(totalLength)

@@ -10,7 +10,8 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { handleCallable, registerFunction, clearFunctions, type CallableRequest, type CallableResponse } from '../../src/functions/callable'
+import { handleCallable, registerFunction, clearFunctions, setProjectId, type CallableRequest, type CallableResponse } from '../../src/functions/callable'
+import { generateFirebaseToken } from '../../src/auth/jwt'
 import {
   testFunction,
   echoFunction,
@@ -19,6 +20,9 @@ import {
   publicFunction,
   slowFunction,
 } from '../../src/functions/test-functions'
+
+// Test project ID for JWT verification
+const TEST_PROJECT_ID = 'demo-project'
 
 // Helper to create a mock request
 function createRequest(overrides: Partial<CallableRequest> = {}): CallableRequest {
@@ -34,6 +38,9 @@ function createRequest(overrides: Partial<CallableRequest> = {}): CallableReques
 
 describe('Firebase Callable Function Protocol', () => {
   beforeAll(() => {
+    // Set project ID for JWT verification
+    setProjectId(TEST_PROJECT_ID)
+
     // Register test functions
     registerFunction('testFunction', testFunction)
     registerFunction('echoFunction', echoFunction)
@@ -213,22 +220,34 @@ describe('Firebase Callable Function Protocol', () => {
 
   describe('Authorization Header Parsing', () => {
     it('should parse Bearer token from Authorization header', async () => {
+      // Generate a valid JWT token for testing
+      const validToken = await generateFirebaseToken({
+        uid: 'test-user-123',
+        projectId: TEST_PROJECT_ID,
+        email: 'test@example.com',
+        emailVerified: true,
+      })
+
       const request = createRequest({
         headers: {
           'content-type': 'application/json',
-          authorization: 'Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test-token',
+          authorization: `Bearer ${validToken}`,
         },
         body: { data: {} },
       })
 
       const response = await handleCallable('authFunction', request)
 
-      // The function should receive the parsed token context
+      // The function should receive the parsed token context with user info
       expect(response.status).toBe(200)
       expect(response.body).toEqual({
         result: expect.objectContaining({
           auth: expect.objectContaining({
             token: expect.any(String),
+            uid: 'test-user-123',
+            email: 'test@example.com',
+            emailVerified: true,
+            signInProvider: expect.any(String),
           }),
         }),
       })
