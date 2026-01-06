@@ -7,6 +7,10 @@
  * Reference: https://cloud.google.com/firestore/docs/reference/rest/v1/StructuredQuery
  */
 
+import { createLogger } from '../utils/logger.js'
+
+const log = createLogger({ service: 'firestore-query' })
+
 // =============================================================================
 // Type Definitions - Firestore StructuredQuery Types
 // =============================================================================
@@ -855,7 +859,7 @@ function matchesOperator(value: unknown, op: string, expected: unknown): boolean
       // For simple ARRAY_CONTAINS, expected is the value to find
       return value.some((v) => deepEqual(v, expected))
     default:
-      console.warn(`Unknown operator: ${op}`)
+      log.warn(`Unknown operator: ${op}`)
       return true
   }
 }

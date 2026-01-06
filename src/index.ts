@@ -18,3 +18,12 @@ export * as functions from './functions/index.js'
 
 // Rules module - Security Rules parser and evaluator
 export * as rules from './rules/index.js'
+
+// Error module - Firebase error hierarchy with error codes
+export * as errors from './errors/index.js'
+
+// Config module - FirebaseApp configuration with custom endpoints
+export * as config from './config/index.js'
+
+// Infrastructure module - Router and request handling
+export * as infra from './infra/index.js'

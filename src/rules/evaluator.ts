@@ -806,6 +806,9 @@ export class RulesEvaluator {
       case '*':
         return (leftValue as any) * (rightValue as any)
       case '/':
+        if (rightValue === 0) {
+          throw new EvaluationError('division by zero')
+        }
         return (leftValue as any) / (rightValue as any)
       case '%':
         return (leftValue as any) % (rightValue as any)

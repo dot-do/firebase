@@ -22,6 +22,9 @@ import {
   type Precondition,
 } from './crud'
 import type { Value } from './values'
+import { createLogger } from '../utils/logger.js'
+
+const log = createLogger({ service: 'firestore-server' })
 
 /**
  * Parse query parameters from URL
@@ -519,7 +522,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendError(res, 405, 'METHOD_NOT_ALLOWED', `Method ${method} not allowed`)
     }
   } catch (error: any) {
-    console.error('Request handler error:', error)
+    log.error('Request handler error', error instanceof Error ? error : undefined)
     sendError(res, 500, 'INTERNAL', error.message || 'Internal server error')
   }
 }

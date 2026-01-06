@@ -6,14 +6,19 @@ import {
   handleUpdate,
   handleDelete,
   handleSendOobCode,
+  handleTokenExchange,
   type SignUpRequest,
   type SignInWithPasswordRequest,
   type LookupRequest,
   type UpdateRequest,
   type DeleteRequest,
   type SendOobCodeRequest,
+  type TokenExchangeRequest,
   type IdentityToolkitError,
 } from './identity-toolkit.js'
+import { createLogger } from '../utils/logger.js'
+
+const log = createLogger({ service: 'auth-emulator' })
 
 const PORT = process.env.FIREBASE_AUTH_EMULATOR_PORT || 9099
 const MAX_BODY_SIZE = 1048576 // 1MB
@@ -54,6 +59,36 @@ async function parseBody(req: http.IncomingMessage): Promise<unknown> {
       } catch (error) {
         reject(error)
       }
+    })
+    req.on('error', reject)
+  })
+}
+
+function parseFormUrlEncoded(body: string): Record<string, string> {
+  const result: Record<string, string> = {}
+  const params = new URLSearchParams(body)
+  for (const [key, value] of params) {
+    result[key] = value
+  }
+  return result
+}
+
+async function parseBodyRaw(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = ''
+    let size = 0
+
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (size > MAX_BODY_SIZE) {
+        req.destroy()
+        reject(new Error('PAYLOAD_TOO_LARGE'))
+        return
+      }
+      body += chunk.toString()
+    })
+    req.on('end', () => {
+      resolve(body)
     })
     req.on('error', reject)
   })
@@ -102,6 +137,29 @@ async function handleRequest(
 
   try {
     if (req.method === 'POST') {
+      const contentType = req.headers['content-type'] || ''
+
+      // Handle token exchange endpoint first (uses form-urlencoded)
+      if (pathname.includes('/securetoken.googleapis.com/v1/token')) {
+        const rawBody = await parseBodyRaw(req)
+        let tokenRequest: TokenExchangeRequest
+
+        if (contentType.includes('application/x-www-form-urlencoded')) {
+          tokenRequest = parseFormUrlEncoded(rawBody) as unknown as TokenExchangeRequest
+        } else if (contentType.includes('application/json')) {
+          tokenRequest = JSON.parse(rawBody) as TokenExchangeRequest
+        } else {
+          // Default to form-urlencoded for this endpoint
+          tokenRequest = parseFormUrlEncoded(rawBody) as unknown as TokenExchangeRequest
+        }
+
+        const result = await handleTokenExchange(tokenRequest)
+        const statusCode = 'error' in result ? 400 : 200
+        sendResponse(res, result, statusCode)
+        return
+      }
+
+      // Parse JSON body for other endpoints
       const body = await parseBody(req)
 
       // Route to appropriate handler based on endpoint
@@ -173,7 +231,7 @@ async function handleRequest(
       )
       return
     }
-    console.error('Error handling request:', error)
+    log.error('Error handling request', error instanceof Error ? error : undefined)
     sendResponse(
       res,
       {
@@ -200,7 +258,7 @@ export function startEmulator(port: number = Number(PORT)): Promise<void> {
 
     server.on('error', (error: NodeJS.ErrnoException) => {
       if (error.code === 'EADDRINUSE') {
-        console.log(`Port ${port} is already in use, assuming emulator is already running`)
+        log.info(`Port ${port} is already in use, assuming emulator is already running`)
         server = null
         resolve()
       } else {
@@ -209,7 +267,7 @@ export function startEmulator(port: number = Number(PORT)): Promise<void> {
     })
 
     server.listen(port, () => {
-      console.log(`Firebase Auth Emulator running on http://localhost:${port}`)
+      log.info(`Firebase Auth Emulator running on http://localhost:${port}`)
       resolve()
     })
   })
@@ -235,5 +293,5 @@ export function stopEmulator(): Promise<void> {
 
 // Start emulator if this file is run directly
 if (import.meta.url === `file://${process.argv[1]}`) {
-  startEmulator().catch(console.error)
+  startEmulator().catch((err) => log.error('Failed to start emulator', err))
 }

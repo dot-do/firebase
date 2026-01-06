@@ -117,3 +117,29 @@ export {
 
 // HTTP server
 export { startServer, stopServer } from './server.js'
+
+// gRPC Emulator Server
+export {
+  startFirestoreEmulator,
+  stopFirestoreEmulator,
+  clearFirestoreEmulatorData,
+  getFirestoreEmulatorDocuments,
+} from './grpc-emulator.js'
+
+// Field Path Traversal Utilities
+export {
+  parseFieldPath,
+  joinFieldPath,
+  getFieldByPath,
+  getFieldBySegments,
+  setFieldByPath,
+  setFieldBySegments,
+  deleteFieldByPath,
+  deleteFieldBySegments,
+  hasFieldByPath,
+  hasFieldBySegments,
+  applyFieldMask,
+  mergeFieldsWithMask,
+  type Fields,
+  type FieldPathResult,
+} from './field-path.js'

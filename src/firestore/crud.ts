@@ -15,6 +15,9 @@
  */
 
 import type { Value, MapValue } from './values'
+import { createLogger } from '../utils/logger.js'
+
+const log = createLogger({ service: 'firestore-crud' })
 
 /**
  * Firestore document representation
@@ -131,7 +134,7 @@ function emitDocumentChange(event: DocumentChangeEvent): void {
     try {
       listener(event)
     } catch (error) {
-      console.error('Document change listener error:', error)
+      log.error('Document change listener error', error instanceof Error ? error : undefined)
     }
   }
 }
@@ -387,7 +390,7 @@ function checkPrecondition(doc: Document | null, precondition: Precondition): vo
 
     // Debug logging
     if (process.env.DEBUG_PRECONDITION) {
-      console.log('[DEBUG] checkPrecondition:', {
+      log.debug('checkPrecondition', {
         docExists: exists,
         preconditionExists: precondition.exists,
         docName: doc?.name

@@ -81,3 +81,24 @@ export {
   type StorageAuthContext,
   type AuthVerificationResult,
 } from './config.js'
+
+// Storage Adapter Interface and Implementations
+export {
+  type StorageAdapter,
+  type StoredObject,
+  type StoredObjectMetadata,
+  type AdapterUploadOptions,
+  type AdapterListOptions,
+  type AdapterListResult,
+  type AdapterUpdateMetadataOptions,
+  type AdapterStats,
+} from './adapter.js'
+
+export { InMemoryAdapter } from './in-memory-adapter.js'
+
+// HTTP Emulator Server
+export {
+  startStorageEmulator,
+  stopStorageEmulator,
+  clearStorageEmulatorData,
+} from './emulator.js'

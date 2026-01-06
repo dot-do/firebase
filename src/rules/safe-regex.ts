@@ -13,6 +13,10 @@
  * @see https://owasp.org/www-community/attacks/Regular_expression_Denial_of_Service_-_ReDoS
  */
 
+import { createLogger } from '../utils/logger.js'
+
+const log = createLogger({ service: 'safe-regex' })
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -284,7 +288,7 @@ export function safeRegexTest(
     if (elapsed > timeoutMs) {
       // Execution completed but took longer than expected
       // Still return the result but could be flagged for monitoring
-      console.warn(`Regex execution took ${elapsed}ms (threshold: ${timeoutMs}ms)`)
+      log.warn(`Regex execution took ${elapsed}ms (threshold: ${timeoutMs}ms)`)
     }
 
     return {
@@ -354,7 +358,7 @@ export function safeRegexReplace(
     const elapsed = Date.now() - startTime
 
     if (elapsed > timeoutMs) {
-      console.warn(`Regex replace took ${elapsed}ms (threshold: ${timeoutMs}ms)`)
+      log.warn(`Regex replace took ${elapsed}ms (threshold: ${timeoutMs}ms)`)
     }
 
     return {

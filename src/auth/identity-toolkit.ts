@@ -225,6 +225,7 @@ export async function handleSignUp(
   })
 
   const refreshToken = generateRefreshToken()
+  storeRefreshToken(refreshToken, user.localId)
 
   return {
     idToken,
@@ -244,6 +245,11 @@ export async function handleSignInWithPassword(
   }
   if (!request.password) {
     return createError('MISSING_PASSWORD')
+  }
+
+  // Validate email format
+  if (!isValidEmail(request.email)) {
+    return createError('INVALID_EMAIL')
   }
 
   // Find user by email
@@ -282,6 +288,7 @@ export async function handleSignInWithPassword(
   })
 
   const refreshToken = generateRefreshToken()
+  storeRefreshToken(refreshToken, user.localId)
 
   return {
     idToken,
@@ -363,6 +370,16 @@ export async function handleUpdate(
     return createError('USER_DISABLED')
   }
 
+  // Validate email format if provided
+  if (request.email !== undefined && request.email !== '' && !isValidEmail(request.email)) {
+    return createError('INVALID_EMAIL')
+  }
+
+  // Validate password strength if provided (empty string is invalid)
+  if (request.password !== undefined && !isValidPassword(request.password)) {
+    return createError('WEAK_PASSWORD : Password should be at least 6 characters')
+  }
+
   // Check if email is already in use
   if (request.email && request.email !== user.email) {
     const existingUser = getUserByEmail(request.email)
@@ -433,7 +450,9 @@ export async function handleUpdate(
     })
 
     response.idToken = idToken
-    response.refreshToken = generateRefreshToken()
+    const newRefreshToken = generateRefreshToken()
+    storeRefreshToken(newRefreshToken, updatedUser.localId)
+    response.refreshToken = newRefreshToken
     response.expiresIn = '3600'
   }
 
@@ -522,6 +541,11 @@ export async function handleSendOobCode(
       return createError('MISSING_EMAIL')
     }
 
+    // Validate email format
+    if (!isValidEmail(request.email)) {
+      return createError('INVALID_EMAIL')
+    }
+
     const user = getUserByEmail(request.email)
     if (!user) {
       return createError('EMAIL_NOT_FOUND')
@@ -539,4 +563,122 @@ export async function handleSendOobCode(
   }
 
   return createError('INVALID_REQ_TYPE')
+}
+
+// Token Exchange Types and Functions
+export interface TokenExchangeRequest {
+  grant_type: string
+  refresh_token: string
+}
+
+export interface TokenExchangeResponse {
+  access_token: string
+  expires_in: string
+  token_type: string
+  refresh_token: string
+  id_token: string
+  user_id: string
+  project_id: string
+}
+
+// Refresh token store
+const refreshTokenStore = new Map<string, { userId: string; createdAt: number }>()
+const REFRESH_TOKEN_EXPIRATION_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
+
+export function clearRefreshTokenStore(): void {
+  refreshTokenStore.clear()
+}
+
+export function getRefreshTokenStoreSize(): number {
+  return refreshTokenStore.size
+}
+
+export function getRefreshTokenExpirationMs(): number {
+  return REFRESH_TOKEN_EXPIRATION_MS
+}
+
+export function storeRefreshToken(token: string, userId: string): void {
+  refreshTokenStore.set(token, { userId, createdAt: Date.now() })
+}
+
+export function validateRefreshToken(token: string): { valid: boolean; userId?: string } {
+  const entry = refreshTokenStore.get(token)
+  if (!entry) {
+    return { valid: false }
+  }
+
+  // Check if expired
+  if (Date.now() - entry.createdAt > REFRESH_TOKEN_EXPIRATION_MS) {
+    refreshTokenStore.delete(token)
+    return { valid: false }
+  }
+
+  return { valid: true, userId: entry.userId }
+}
+
+export async function handleTokenExchange(
+  request: TokenExchangeRequest
+): Promise<TokenExchangeResponse | IdentityToolkitError> {
+  // Validate grant_type
+  if (!request.grant_type) {
+    return createError('MISSING_GRANT_TYPE')
+  }
+
+  if (request.grant_type !== 'refresh_token') {
+    return createError('INVALID_GRANT_TYPE')
+  }
+
+  // Validate refresh_token
+  if (!request.refresh_token) {
+    return createError('MISSING_REFRESH_TOKEN')
+  }
+
+  if (typeof request.refresh_token !== 'string' || request.refresh_token.trim() === '') {
+    return createError('INVALID_REFRESH_TOKEN')
+  }
+
+  // Validate the refresh token
+  const validation = validateRefreshToken(request.refresh_token)
+  if (!validation.valid || !validation.userId) {
+    return createError('INVALID_REFRESH_TOKEN')
+  }
+
+  // Get the user
+  const user = getUserById(validation.userId)
+  if (!user) {
+    return createError('USER_NOT_FOUND')
+  }
+
+  // Check if user is disabled
+  if (user.disabled) {
+    return createError('USER_DISABLED')
+  }
+
+  // Generate new tokens
+  const { generateFirebaseToken } = await import('./jwt.js')
+  const newIdToken = await generateFirebaseToken({
+    uid: user.localId,
+    projectId: projectId,
+    email: user.email,
+    emailVerified: user.emailVerified,
+    displayName: user.displayName,
+    photoURL: user.photoUrl,
+    signInProvider: 'password',
+    identities: user.email ? { email: [user.email] } : {},
+  })
+  const newRefreshToken = generateRefreshToken()
+
+  // Delete old refresh token and store new one (token rotation)
+  refreshTokenStore.delete(request.refresh_token)
+  storeRefreshToken(newRefreshToken, user.localId)
+
+  return {
+    access_token: newIdToken,
+    expires_in: '3600',
+    token_type: 'Bearer',
+    refresh_token: newRefreshToken,
+    id_token: newIdToken,
+    user_id: user.localId,
+    project_id: projectId,
+  }
 }
