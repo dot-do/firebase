@@ -1,0 +1,32 @@
+{
+  "name": "ai4",
+  "version": "0.0.1",
+  "description": "AI primitives for autonomous agents and humans in the loop",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "autonomous-agents": "^2.0.2",
+    "human-in-the-loop": "^2.0.2"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "autonomous",
+    "human-in-the-loop",
+    "primitives"
+  ],
+  "license": "MIT"
+}
