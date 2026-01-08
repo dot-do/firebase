@@ -1,729 +1,458 @@
 # firebase.do
 
-**Firebase API-Compatible Backend** — A 100% Firebase-compatible backend that runs anywhere, with full support for Authentication, Firestore, Storage, Functions, and Security Rules.
+> Real-time Database. Edge-Native. Zero Lock-in. AI-First.
 
-[![npm version](https://img.shields.io/npm/v/firebase.do.svg)](https://www.npmjs.com/package/firebase.do)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+Google Firebase dominates mobile backend development. But the lock-in is brutal - proprietary protocols, opaque pricing, vendor-controlled scaling. Your data lives in Google's house, and moving out costs months of migration work.
 
----
+**firebase.do** is the open-source alternative. 100% API compatible. Runs on your Cloudflare account. Real-time that actually scales. AI that speaks natural language to your database.
 
-## Why firebase.do?
-
-Firebase is powerful, but lock-in is real. firebase.do gives you the complete Firebase API without the vendor dependency:
-
-- **100% API Compatible** — Drop-in replacement for Firebase SDK, no code changes required
-- **Run Anywhere** — Deploy to any Node.js environment, Cloudflare Workers, or your own infrastructure
-- **Full Emulation** — Complete local development without network calls or Firebase project setup
-- **Security Rules Engine** — Parse and evaluate Firebase Security Rules with full expression support
-- **Open Source** — MIT licensed, audit the code, contribute improvements, own your stack
+## AI-Native API
 
 ```typescript
-import { initializeApp } from 'firebase/app'
-import { getFirestore, doc, setDoc, getDoc } from 'firebase/firestore'
-import { getAuth, connectAuthEmulator } from 'firebase/auth'
-
-// Point to firebase.do instead of Firebase
-const app = initializeApp({
-  apiKey: 'your-api-key',
-  projectId: 'my-project',
-})
-
-const auth = getAuth(app)
-connectAuthEmulator(auth, 'http://localhost:9099')
-
-// Everything works exactly like Firebase
-const db = getFirestore(app)
-await setDoc(doc(db, 'users', 'alice'), { name: 'Alice', role: 'admin' })
-const user = await getDoc(doc(db, 'users', 'alice'))
+import { firebase } from 'firebase.do'           // Full SDK
+import { firebase } from 'firebase.do/tiny'      // Minimal client
+import { firebase } from 'firebase.do/realtime'  // Real-time only
 ```
 
----
+Natural language for real-time data:
+
+```typescript
+import { firebase } from 'firebase.do'
+
+// Talk to it like a colleague
+const online = await firebase`users online now`
+const recent = await firebase`messages in chat-123 since yesterday`
+const orders = await firebase`pending orders over $100`
+
+// Chain like sentences
+await firebase`users in California`
+  .notify(`Special offer for West Coast customers`)
+
+// Real-time just works
+await firebase`watch users online`.on('join', user => {
+  console.log(`${user.name} came online`)
+})
+```
+
+## The Problem
+
+Firebase dominates mobile backend development:
+
+| What Google Charges | The Reality |
+|---------------------|-------------|
+| **Firestore Reads** | $0.36/100K (adds up fast at scale) |
+| **Realtime DB** | $5/GB stored + bandwidth |
+| **Authentication** | Free tier then $0.06/verification |
+| **Cloud Functions** | CPU + memory + invocations |
+| **Vendor Lock-in** | Proprietary protocols, no exit path |
+| **Data Portability** | Export is painful, migration is worse |
+
+### The Lock-in Trap
+
+Firebase makes it easy to start:
+
+- Quick setup, great DX
+- Free tier generous enough to hook you
+- Then you're stuck:
+  - Firestore query language is proprietary
+  - Real-time protocol is undocumented
+  - Security rules don't transfer
+  - Migration requires rewriting everything
+
+### The Scaling Wall
+
+Firebase has hard limits:
+
+- **1 write/second per document** - No hot documents
+- **1MB document size** - No rich objects
+- **20K concurrent connections** - Per database
+- **Complex queries fail** - No joins, limited indexing
+- **Cold starts** - Cloud Functions latency spikes
+
+### The Black Box Problem
+
+You can't see inside:
+
+- Opaque pricing (surprise bills are common)
+- No query optimization visibility
+- Scaling is automatic until it isn't
+- Support requires paid plan
+
+## The Solution
+
+**firebase.do** reimagines Firebase for developers:
+
+```
+Firebase                            firebase.do
+-----------------------------------------------------------------
+Google's infrastructure             Your Cloudflare account
+Proprietary protocols               Open source, MIT licensed
+Opaque pricing                      Predictable costs
+1 write/sec/doc limit               No artificial limits
+Black box scaling                   Durable Objects (infinite scale)
+Vendor lock-in                      Run anywhere
+Security rules locked in            Rules work with any backend
+```
+
+## One-Click Deploy
+
+```bash
+npx create-dotdo firebase
+```
+
+A real-time backend. On infrastructure you control. API-compatible from day one.
+
+```typescript
+import { Firebase } from 'firebase.do'
+
+export default Firebase({
+  name: 'my-app',
+  domain: 'api.my-app.com',
+  realtime: true,
+  auth: { providers: ['email', 'google', 'github'] },
+})
+```
 
 ## Features
 
 ### Authentication
 
-| Feature | Description |
-|---------|-------------|
-| **Email/Password Auth** | `signUp`, `signInWithPassword`, password validation and hashing |
-| **User Management** | `lookup`, `update`, `delete` users with full Identity Toolkit API |
-| **JWT Tokens** | Generate and verify Firebase-compatible ID tokens with key rotation |
-| **OOB Codes** | Password reset, email verification via `sendOobCode` |
-| **Emulator Server** | HTTP server compatible with Firebase Auth Emulator protocol |
+```typescript
+// Sign up is one line
+await firebase`sign up alice@example.com password123`
+
+// Sign in naturally
+await firebase`sign in alice@example.com`
+
+// Check who's logged in
+await firebase`current user`
+
+// Social auth just works
+await firebase`sign in with google`
+await firebase`sign in with github`
+```
 
 ### Firestore
 
-| Feature | Description |
-|---------|-------------|
-| **CRUD Operations** | `getDocument`, `updateDocument`, `deleteDocument` with preconditions |
-| **Structured Queries** | Full query translation with filters, ordering, pagination, and projections |
-| **Real-time Watches** | `watchDocument`, `watchQuery` with snapshot callbacks |
-| **Batch Operations** | `batchGet`, `commit`, transactions with `beginTransaction`/`rollback` |
-| **Field Transforms** | Server timestamps, array unions, increments via `DocumentTransform` |
-| **Value Encoding** | Complete Firestore value types: GeoPoint, Timestamp, Reference, Bytes |
+```typescript
+// Write documents naturally
+await firebase`add user alice: name Alice, role admin`
+await firebase`set users/bob to { name: Bob, team: engineering }`
+
+// Query like you're asking a question
+await firebase`users where role is admin`
+await firebase`orders over $100 from last week`
+await firebase`messages in chat-123 limit 50`
+
+// AI infers what you need
+await firebase`alice`                    // returns user document
+await firebase`alice's orders`           // returns alice's orders
+await firebase`alice's last order`       // returns most recent
+```
+
+### Real-time Subscriptions
+
+```typescript
+// Watch anything
+await firebase`watch users online`
+  .on('add', user => console.log(`${user.name} joined`))
+  .on('remove', user => console.log(`${user.name} left`))
+
+// Chat in three lines
+await firebase`watch messages in room-123`
+  .on('add', msg => renderMessage(msg))
+
+// Presence is automatic
+await firebase`set my presence to online`
+await firebase`watch who's in room-123`
+```
 
 ### Storage
 
-| Feature | Description |
-|---------|-------------|
-| **Object Operations** | `uploadObject`, `downloadObject`, `deleteObject`, `copyObject` |
-| **Metadata Management** | `getMetadata`, `updateMetadata`, custom metadata support |
-| **Resumable Uploads** | Chunked uploads with `initiateResumableUpload`, `resumeUpload`, `completeUpload` |
-| **Content Detection** | Automatic MIME type detection via `detectContentType` |
-| **Download URLs** | Generate signed download URLs with `getDownloadUrl` |
+```typescript
+// Upload naturally
+await firebase`upload photo.jpg to images/profile`
+await firebase`upload resume.pdf for user alice`
+
+// Download just works
+await firebase`download images/profile/photo.jpg`
+await firebase`get download url for alice's resume`
+
+// Resumable uploads for large files
+await firebase`upload video.mp4 resumable`
+```
 
 ### Cloud Functions
 
-| Feature | Description |
-|---------|-------------|
-| **Callable Functions** | Firebase Callable protocol with `handleCallable` |
-| **Context Injection** | Full `CallableContext` with auth, instance ID, raw request |
-| **Error Handling** | `CallableError` with Firebase error codes |
-| **Function Registry** | `registerFunction`, `clearFunctions` for dynamic function management |
+```typescript
+// Call functions naturally
+await firebase`call sendWelcomeEmail for alice`
+await firebase`call processOrder with { orderId: 123 }`
+
+// Background triggers are automatic
+await firebase`on user created: call sendWelcomeEmail`
+await firebase`on order placed: call processPayment`
+```
 
 ### Security Rules
 
-| Feature | Description |
-|---------|-------------|
-| **Full Parser** | Parse Firebase Security Rules to AST with error recovery |
-| **Expression Evaluator** | Evaluate rules expressions with complete operator support |
-| **Path Matching** | Wildcard patterns, collection groups, variable extraction |
-| **Built-in Functions** | `get()`, `exists()`, string `matches()`, list `hasAny()`/`hasAll()` |
-| **Type System** | Rules types: Path, Duration, Timestamp, Request, Resource |
-
----
-
-## Quick Start
-
-### Install
-
-```bash
-npm install firebase.do
-```
-
-### Start Auth Emulator
-
 ```typescript
-import { auth } from 'firebase.do'
+// Define rules naturally
+await firebase`allow read users if authenticated`
+await firebase`allow write users/{id} if auth.uid == id`
 
-// Start the auth emulator on port 9099
-await auth.startEmulator(9099)
-
-// Create a user
-const result = await auth.handleSignUp({
-  email: 'alice@example.com',
-  password: 'securePassword123',
-  returnSecureToken: true,
-})
-
-console.log('User created:', result.localId)
-console.log('ID Token:', result.idToken)
-```
-
-### Start Firestore Server
-
-```typescript
-import { firestore } from 'firebase.do'
-
-// Start HTTP server on port 8080
-const server = firestore.startServer(8080)
-
-// Server implements Firestore v1 REST API
-// GET/PATCH/DELETE /v1/projects/{project}/databases/{db}/documents/{path}
-```
-
-### Use with Firebase SDK
-
-```typescript
-import { initializeApp } from 'firebase/app'
-import { getAuth, connectAuthEmulator, createUserWithEmailAndPassword } from 'firebase/auth'
-
-const app = initializeApp({ apiKey: 'test-key', projectId: 'test-project' })
-const auth = getAuth(app)
-
-// Connect to firebase.do emulator
-connectAuthEmulator(auth, 'http://localhost:9099')
-
-// Use Firebase SDK normally
-const { user } = await createUserWithEmailAndPassword(auth, 'bob@example.com', 'password123')
-console.log('Created user:', user.uid)
-```
-
----
-
-## Examples
-
-### User Authentication Flow
-
-```typescript
-import { auth } from 'firebase.do'
-
-// Sign up a new user
-const signUpResult = await auth.handleSignUp({
-  email: 'alice@example.com',
-  password: 'mySecurePassword',
-  returnSecureToken: true,
-})
-
-// Sign in with password
-const signInResult = await auth.handleSignInWithPassword({
-  email: 'alice@example.com',
-  password: 'mySecurePassword',
-  returnSecureToken: true,
-})
-
-// Lookup user details
-const lookupResult = await auth.handleLookup({
-  idToken: signInResult.idToken,
-})
-
-// Update user profile
-await auth.handleUpdate({
-  idToken: signInResult.idToken,
-  displayName: 'Alice Smith',
-  photoUrl: 'https://example.com/alice.jpg',
-})
-
-// Verify a token
-const payload = await auth.verifyFirebaseToken(signInResult.idToken)
-console.log('Verified user:', payload.uid)
-```
-
-### Firestore Document Operations
-
-```typescript
-import { firestore } from 'firebase.do'
-
-const projectId = 'my-project'
-const databaseId = '(default)'
-
-// Create a document
-const doc = firestore.updateDocument(
-  `projects/${projectId}/databases/${databaseId}/documents/users/alice`,
-  {
-    name: { stringValue: 'Alice' },
-    age: { integerValue: '30' },
-    verified: { booleanValue: true },
-    tags: {
-      arrayValue: {
-        values: [
-          { stringValue: 'admin' },
-          { stringValue: 'moderator' },
-        ],
-      },
-    },
+// Or use the familiar syntax
+const rules = `
+  match /users/{userId} {
+    allow read: if request.auth != null;
+    allow write: if request.auth.uid == userId;
   }
-)
-
-// Get a document with field mask
-const retrieved = firestore.getDocument(
-  `projects/${projectId}/databases/${databaseId}/documents/users/alice`,
-  { mask: ['name', 'verified'] }
-)
-
-// Delete with precondition
-firestore.deleteDocument(
-  `projects/${projectId}/databases/${databaseId}/documents/users/alice`,
-  { currentDocument: { exists: true } }
-)
+`
+await firebase`apply rules ${rules}`
 ```
 
-### Real-time Document Watching
+## Promise Pipelining
+
+Chain operations without waiting:
 
 ```typescript
-import { firestore } from 'firebase.do'
+// Find users, filter, notify - one network round trip
+await firebase`users in California`
+  .filter(user => user.lastOrder > 30.days.ago)
+  .map(user => firebase`notify ${user} about flash sale`)
 
-// Watch a single document
-const unsubscribe = firestore.watchDocument(
-  { path: 'users/alice' },
-  (snapshot) => {
-    if (snapshot.exists) {
-      console.log('Document updated:', snapshot.data)
-    } else {
-      console.log('Document deleted')
-    }
-  },
-  { includeMetadataChanges: true }
-)
-
-// Watch a query
-const unsubscribeQuery = firestore.watchQuery(
-  {
-    collection: 'orders',
-    where: [{ field: 'status', op: '==', value: 'pending' }],
-    orderBy: [{ field: 'createdAt', direction: 'desc' }],
-    limit: 10,
-  },
-  (snapshot) => {
-    console.log(`${snapshot.size} pending orders`)
-    snapshot.docChanges.forEach((change) => {
-      console.log(`${change.type}: ${change.doc.id}`)
-    })
-  }
-)
-
-// Later: stop watching
-unsubscribe()
-unsubscribeQuery()
-```
-
-### Security Rules Evaluation
-
-```typescript
-import { rules } from 'firebase.do'
-
-// Parse security rules
-const rulesSource = `
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /users/{userId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth.uid == userId;
-    }
-
-    match /posts/{postId} {
-      allow read: if true;
-      allow create: if request.auth != null
-        && request.resource.data.title.size() <= 100;
-    }
-  }
-}
+// Batch operations read like a todo list
+await firebase`
+  add message to chat-123: Hello everyone
+  set users/alice/status to active
+  increment room-123 message count
 `
 
-const ast = rules.parseRules(rulesSource)
-
-// Create an evaluator
-const evaluator = rules.createEvaluator()
-
-// Evaluate an expression
-const context = {
-  request: {
-    auth: { uid: 'user123', token: { email: 'user@example.com' } },
-    resource: { data: { title: 'My Post' } },
-    method: 'create',
-    path: '/databases/default/documents/posts/post1',
-    time: new Date(),
-  },
-  resource: null,
-  database: 'default',
-}
-
-const canCreate = evaluator.evaluate(
-  'request.auth != null && request.resource.data.title.size() <= 100',
-  context
-)
-console.log('Can create post:', canCreate) // true
+// Real-time chains
+await firebase`watch orders`
+  .filter(order => order.total > 100)
+  .map(order => firebase`notify sales about ${order}`)
 ```
-
-### Storage Operations
-
-```typescript
-import { storage } from 'firebase.do'
-
-// Upload a file
-const metadata = await storage.uploadObject(
-  'images/photo.jpg',
-  imageBuffer,
-  {
-    contentType: 'image/jpeg',
-    customMetadata: { uploadedBy: 'user123' },
-  }
-)
-
-// Get download URL
-const url = await storage.getDownloadUrl('images/photo.jpg')
-
-// Resumable upload for large files
-const { uploadUri } = await storage.initiateResumableUpload(
-  'videos/large-video.mp4',
-  {
-    contentType: 'video/mp4',
-    size: totalSize,
-  }
-)
-
-// Upload in chunks
-let offset = 0
-while (offset < totalSize) {
-  const chunk = videoData.slice(offset, offset + storage.DEFAULT_CHUNK_SIZE)
-  const result = await storage.resumeUpload(uploadUri, chunk, {
-    offset,
-    totalSize,
-  })
-  offset = result.offset
-}
-
-// Complete the upload
-await storage.completeUpload(uploadUri)
-```
-
-### Callable Functions
-
-```typescript
-import { functions } from 'firebase.do'
-
-// Register a callable function
-functions.registerFunction('addMessage', async (data, context) => {
-  if (!context.auth) {
-    throw new functions.CallableError('unauthenticated', 'Must be logged in')
-  }
-
-  const { text, roomId } = data
-
-  // Add message to database...
-  const messageId = await saveMessage(roomId, {
-    text,
-    authorId: context.auth.uid,
-    createdAt: new Date(),
-  })
-
-  return { messageId }
-})
-
-// Handle incoming request
-const response = await functions.handleCallable('addMessage', {
-  data: { text: 'Hello!', roomId: 'room123' },
-  auth: { uid: 'user123', token: {} },
-})
-```
-
-### Path Matching for Rules
-
-```typescript
-import { rules } from 'firebase.do'
-
-// Simple matching
-const result = rules.matchPath('/users/{userId}', '/users/alice')
-// { matches: true, wildcards: { userId: 'alice' } }
-
-// Nested paths
-const result2 = rules.matchPath(
-  '/users/{userId}/posts/{postId}',
-  '/users/alice/posts/post123'
-)
-// { matches: true, wildcards: { userId: 'alice', postId: 'post123' } }
-
-// Recursive wildcard
-const result3 = rules.matchPath(
-  '/files/{path=**}',
-  '/files/documents/reports/2024/q1.pdf'
-)
-// { matches: true, wildcards: { path: 'documents/reports/2024/q1.pdf' } }
-
-// Extract wildcard names
-const wildcards = rules.getWildcardNames('/users/{userId}/posts/{postId}')
-// ['userId', 'postId']
-```
-
----
 
 ## Architecture
 
+### Edge-Native Design
+
 ```
-+------------------------------------------------------------------+
-|                      Client Applications                          |
-+------------------+-------------------+----------------------------+
-|   Firebase SDK   |   REST API        |   Direct Module Import     |
-|   (Auth/FS/etc)  |   (HTTP Calls)    |   (Programmatic)           |
-+------------------+---------+---------+----------------------------+
-                             |
-+----------------------------v---------------------------------+
-|                       firebase.do                            |
-+--------------------------------------------------------------+
-|                                                              |
-|  +----------+  +------------+  +-----------+  +-----------+  |
-|  |   Auth   |  |  Firestore |  |  Storage  |  | Functions |  |
-|  +----------+  +------------+  +-----------+  +-----------+  |
-|  | Identity |  | Document   |  | Object    |  | Callable  |  |
-|  | Toolkit  |  | CRUD       |  | CRUD      |  | Protocol  |  |
-|  | JWT/Keys |  | Queries    |  | Resumable |  | Context   |  |
-|  | Users    |  | Watch      |  | Metadata  |  | Errors    |  |
-|  +----------+  +------------+  +-----------+  +-----------+  |
-|                                                              |
-|  +----------------------------------------------------------+|
-|  |                    Security Rules                         ||
-|  +----------------------------------------------------------+|
-|  | Parser -> AST -> Evaluator -> Path Matcher -> Built-ins  ||
-|  +----------------------------------------------------------+|
-|                                                              |
-+--------------------------------------------------------------+
+Client Request --> Cloudflare Edge --> Durable Object --> SQLite
+                        |                    |              |
+                   Global CDN            Single-threaded   Transactional
+                   (<50ms to edge)       (no conflicts)    (ACID)
 ```
 
-firebase.do implements the complete Firebase API surface:
+### Durable Object per Collection
 
-1. **Identity Toolkit API** — Full Auth emulator with JWT generation/verification
-2. **Firestore REST API v1** — Document operations, queries, real-time watches
-3. **Storage API** — Object storage with resumable uploads and signed URLs
-4. **Callable Protocol** — Cloud Functions callable format with auth context
-5. **Security Rules Engine** — Parse and evaluate Firestore/Storage security rules
+```
+FirebaseProjectDO (config, auth, rules)
+  |
+  +-- CollectionDO (documents, indexes, subscriptions)
+  |     |-- SQLite: Document storage (fast queries)
+  |     +-- WebSockets: Real-time connections
+  |
+  +-- AuthDO (users, sessions, tokens)
+  |     |-- SQLite: User records
+  |     +-- JWT: Token generation
+  |
+  +-- StorageDO (objects, metadata)
+        |-- R2: File storage
+        +-- SQLite: Metadata index
+```
 
----
+### Storage Tiers
 
-## API Reference
+| Tier | Storage | Use Case | Latency |
+|------|---------|----------|---------|
+| **Hot** | SQLite | Active documents, indexes | <10ms |
+| **Warm** | R2 + Index | Large files, attachments | <100ms |
+| **Cold** | R2 Archive | Backups, old versions | <1s |
 
-### Auth Module
+## vs Firebase
+
+| Feature | Google Firebase | firebase.do |
+|---------|----------------|-------------|
+| **Infrastructure** | Google Cloud | Your Cloudflare account |
+| **Pricing** | Opaque, can spike | Predictable, transparent |
+| **Write Limits** | 1/sec/doc | No artificial limits |
+| **Connection Limits** | 20K per database | Unlimited (DO isolation) |
+| **Query Language** | Proprietary | Standard + Natural Language |
+| **Real-time Protocol** | Proprietary | Open WebSocket |
+| **Security Rules** | Firebase-only | Portable, standard |
+| **Cold Starts** | Yes (Functions) | No (Durable Objects) |
+| **Data Location** | Google chooses | You choose |
+| **Lock-in** | Severe | None (MIT licensed) |
+| **AI Integration** | Limited | Native natural language |
+
+## Use Cases
+
+### Chat Applications
 
 ```typescript
-import { auth } from 'firebase.do'
+// Real-time chat in minutes
+await firebase`watch messages in ${roomId}`
+  .on('add', msg => renderMessage(msg))
 
-// Emulator lifecycle
-auth.startEmulator(port?: number): Promise<void>
-auth.stopEmulator(): Promise<void>
+await firebase`add message to ${roomId}: ${text}`
 
-// Identity Toolkit handlers
-auth.handleSignUp(request: SignUpRequest): Promise<SignUpResponse>
-auth.handleSignInWithPassword(request: SignInWithPasswordRequest): Promise<SignInWithPasswordResponse>
-auth.handleLookup(request: LookupRequest): Promise<LookupResponse>
-auth.handleUpdate(request: UpdateRequest): Promise<UpdateResponse>
-auth.handleDelete(request: DeleteRequest): Promise<DeleteResponse>
-auth.handleSendOobCode(request: SendOobCodeRequest): Promise<SendOobCodeResponse>
-
-// JWT operations
-auth.generateFirebaseToken(options: GenerateTokenOptions): Promise<string>
-auth.verifyFirebaseToken(token: string): Promise<VerifiedTokenPayload>
-auth.rotateSigningKey(): Promise<void>
-
-// User management
-auth.createUser(email: string, password: string): Promise<UserRecord>
-auth.getUserById(uid: string): UserRecord | undefined
-auth.getUserByEmail(email: string): UserRecord | undefined
-auth.updateUser(uid: string, updates: Partial<UserRecord>): UserRecord
-auth.deleteUser(uid: string): boolean
+// Typing indicators
+await firebase`set ${userId} typing in ${roomId}`
+await firebase`watch who's typing in ${roomId}`
 ```
 
-### Firestore Module
+### Live Dashboards
 
 ```typescript
-import { firestore } from 'firebase.do'
+// Real-time metrics
+await firebase`watch orders today`
+  .on('add', order => updateRevenue(order.total))
 
-// Server lifecycle
-firestore.startServer(port?: number): Server
-firestore.stopServer(server: Server): Promise<void>
-
-// CRUD operations
-firestore.getDocument(path: string, options?: GetDocumentOptions): Document | null
-firestore.updateDocument(path: string, fields: Fields, options?: UpdateDocumentOptions): Document
-firestore.deleteDocument(path: string, options?: DeleteDocumentOptions): boolean
-
-// Query operations
-firestore.runQuery(query: StructuredQuery): QueryResult
-firestore.translateStructuredQuery(query: StructuredQuery): MongoQuery
-
-// Batch operations
-firestore.batchGet(request: BatchGetRequest): BatchGetResponse
-firestore.commit(request: CommitRequest): CommitResponse
-firestore.beginTransaction(request: BeginTransactionRequest): BeginTransactionResponse
-firestore.rollback(request: RollbackRequest): void
-
-// Real-time
-firestore.watchDocument(spec: QuerySpec, callback: DocumentSnapshotCallback): Unsubscribe
-firestore.watchQuery(spec: QuerySpec, callback: QuerySnapshotCallback): Unsubscribe
-
-// Value encoding
-firestore.encodeValue(value: EncodableValue, options?: EncodeOptions): Value
-firestore.decodeValue(value: Value, options?: DecodeOptions): unknown
+await firebase`watch active users`
+  .on('change', count => updateUserCount(count))
 ```
 
-### Storage Module
+### Multiplayer Games
 
 ```typescript
-import { storage } from 'firebase.do'
+// Game state sync
+await firebase`watch game ${gameId} state`
+  .on('change', state => renderGame(state))
 
-// Object operations
-storage.uploadObject(path: string, data: Buffer, options?: UploadOptions): Promise<ObjectMetadata>
-storage.downloadObject(path: string, options?: DownloadOptions): Promise<DownloadResult>
-storage.deleteObject(path: string, options?: DeleteOptions): Promise<void>
-storage.copyObject(source: string, destination: string, options?: CopyOptions): Promise<ObjectMetadata>
-storage.getMetadata(path: string): Promise<ObjectMetadata>
-storage.updateMetadata(path: string, metadata: UpdateMetadataOptions): Promise<ObjectMetadata>
-storage.listObjects(prefix: string, options?: ListOptions): Promise<ListResult>
-storage.getDownloadUrl(path: string): Promise<string>
-
-// Resumable uploads
-storage.initiateResumableUpload(path: string, options: InitiateUploadOptions): Promise<InitiateUploadResult>
-storage.resumeUpload(uploadUri: string, chunk: Buffer, options: ResumeUploadOptions): Promise<ResumeUploadResult>
-storage.getUploadStatus(uploadUri: string): Promise<UploadStatus>
-storage.completeUpload(uploadUri: string, options?: CompleteUploadOptions): Promise<CompletedUploadMetadata>
-storage.cancelUpload(uploadUri: string, options?: CancelUploadOptions): Promise<void>
+// Player moves
+await firebase`update game ${gameId}: player ${playerId} moved to ${position}`
 ```
 
-### Rules Module
+### IoT Data Collection
 
 ```typescript
-import { rules } from 'firebase.do'
+// Sensor data ingestion
+await firebase`add sensor/${deviceId}/readings: ${sensorData}`
 
-// Parsing
-rules.parseRules(source: string, options?: ParseOptions): RulesAST
-rules.parseRulesWithRecovery(source: string): ParseResult
-rules.validateRulesSyntax(source: string): { valid: boolean; errors: ParseError[] }
-rules.stringifyRules(ast: RulesAST): string
-
-// Evaluation
-rules.createEvaluator(): RulesEvaluator
-evaluator.evaluate(expression: string, context: EvaluatorContext): unknown
-
-// Path matching
-rules.matchPath(pattern: string, path: string): PathMatchResult | null
-rules.matchCollectionGroup(group: string, path: string): boolean
-rules.extractWildcards(pattern: string): string[]
-rules.getWildcardNames(pattern: string): string[]
-rules.hasWildcards(pattern: string): boolean
-rules.isValidPattern(pattern: string): boolean
-
-// Built-in types
-rules.createPath(segments: string[]): RulesPath
-rules.createRulesTimestamp(date: Date): RulesTimestamp
-rules.createRulesDuration(ms: number): RulesDuration
-rules.createRulesRequest(request: RequestContext): RulesRequest
+// Real-time monitoring
+await firebase`watch sensors where temperature > 100`
+  .on('add', alert => notifyOperator(alert))
 ```
 
----
+## Migration from Firebase
 
-## Configuration
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FIREBASE_AUTH_EMULATOR_PORT` | `9099` | Port for Auth emulator HTTP server |
-| `FIRESTORE_EMULATOR_PORT` | `8080` | Port for Firestore REST API server |
-
-### Programmatic Configuration
+### Drop-in Replacement
 
 ```typescript
-import { auth, firestore } from 'firebase.do'
+// Before: Google Firebase
+import { initializeApp } from 'firebase/app'
+import { getFirestore } from 'firebase/firestore'
 
-// Start services on custom ports
-await auth.startEmulator(9199)
-const firestoreServer = firestore.startServer(9299)
+const app = initializeApp({ projectId: 'my-project' })
+const db = getFirestore(app)
 
-// Stop services when done
-await auth.stopEmulator()
-await firestore.stopServer(firestoreServer)
+// After: firebase.do (same code works!)
+import { initializeApp } from 'firebase/app'
+import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore'
+
+const app = initializeApp({ projectId: 'my-project' })
+const db = getFirestore(app)
+connectFirestoreEmulator(db, 'your-firebase-do.workers.dev', 443)
+// That's it. Your existing code just works.
 ```
 
----
+### Gradual Migration
 
-## API Compatibility
+```typescript
+// Run both in parallel during migration
+const legacyDb = getFirestore(legacyApp)
+const newDb = getFirestore(newApp)
 
-### Auth (Identity Toolkit API)
+// Sync data as you migrate
+await firebase`sync collection users from legacy`
+```
 
-| Endpoint | Status |
-|----------|--------|
-| `accounts:signUp` | Implemented |
-| `accounts:signInWithPassword` | Implemented |
-| `accounts:lookup` | Implemented |
-| `accounts:update` | Implemented |
-| `accounts:delete` | Implemented |
-| `accounts:sendOobCode` | Implemented |
+## Deployment Options
 
-### Firestore (REST API v1)
-
-| Operation | Status |
-|-----------|--------|
-| Get document | Implemented |
-| Create/Update document | Implemented |
-| Delete document | Implemented |
-| Batch write | Implemented |
-| Run query | Implemented |
-| Watch/Listen | Implemented |
-| Transactions | Implemented |
-
-### Storage
-
-| Operation | Status |
-|-----------|--------|
-| Upload object | Implemented |
-| Resumable upload | Implemented |
-| Download object | Implemented |
-| Delete object | Implemented |
-| Get/Update metadata | Implemented |
-| List objects | Implemented |
-| Copy object | Implemented |
-| Download URLs | Implemented |
-
----
-
-## Development
+### Cloudflare Workers
 
 ```bash
-# Clone the repository
-git clone https://github.com/drivly/firebase.do.git
-cd firebase.do
-
-# Install dependencies
-npm install
-
-# Run tests
-npm test
-
-# Run tests in watch mode
-npm run test:watch
-
-# Run tests with coverage
-npm run test:coverage
-
-# Build
-npm run build
+npx create-dotdo firebase
+# Deploys to your Cloudflare account
 ```
 
-### Project Structure
+### Self-Hosted
 
-```
-src/
-  auth/              # Authentication emulator
-    emulator.ts      # HTTP server for Identity Toolkit API
-    identity-toolkit.ts  # Request handlers
-    jwt.ts           # Token generation and verification
-    users.ts         # User storage and management
-  firestore/         # Firestore emulator
-    server.ts        # REST API HTTP server
-    crud.ts          # Document CRUD operations
-    query.ts         # Structured query translation
-    watch.ts         # Real-time subscriptions
-    batch.ts         # Batch operations and transactions
-    values.ts        # Value encoding/decoding
-  storage/           # Cloud Storage emulator
-    objects.ts       # Object CRUD operations
-    resumable.ts     # Resumable upload protocol
-  functions/         # Cloud Functions emulator
-    callable.ts      # Callable function protocol
-    test-functions.ts  # Example function implementations
-  rules/             # Security Rules engine
-    parser.ts        # Rules language parser
-    evaluator.ts     # Expression evaluator
-    path-matcher.ts  # Path pattern matching
-    builtins.ts      # Built-in functions and types
-  index.ts           # Main entry point
+```bash
+# Docker
+docker run -p 8080:8080 dotdo/firebase
+
+# Kubernetes
+kubectl apply -f firebase-do.yaml
 ```
 
----
+### Local Development
+
+```typescript
+import { firebase } from 'firebase.do'
+
+// Start local emulator
+await firebase.startEmulator({ port: 9099 })
+
+// Use exactly like production
+await firebase`add user alice: name Alice`
+```
 
 ## Roadmap
 
-### Coming Soon
+### Real-time Database
+- [x] Document CRUD
+- [x] Real-time subscriptions
+- [x] Presence system
+- [x] Offline persistence
+- [ ] Multi-region sync
 
-- **Realtime Database** — Firebase RTDB wire protocol and REST API
-- **Cloud Messaging** — FCM message sending and device management
-- **Remote Config** — Feature flags and A/B testing
-- **Multi-tenant Auth** — Support for multiple tenants
-- **OAuth Providers** — Google, Facebook, GitHub sign-in
+### Authentication
+- [x] Email/Password
+- [x] JWT tokens
+- [ ] OAuth providers (Google, GitHub, etc.)
+- [ ] Phone authentication
+- [ ] Anonymous auth
 
----
+### Cloud Functions
+- [x] Callable functions
+- [x] Background triggers
+- [ ] Scheduled functions
+- [ ] Event sources
 
-## License
-
-MIT - see [LICENSE](LICENSE)
-
----
+### Security
+- [x] Security rules engine
+- [x] Rules parser
+- [x] Expression evaluator
+- [ ] Role-based access
+- [ ] Row-level security
 
 ## Contributing
 
-Contributions welcome! Please open an issue or submit a pull request.
+firebase.do is open source under the MIT license.
+
+```bash
+git clone https://github.com/dotdo/firebase.do
+cd firebase.do
+pnpm install
+pnpm test
+```
+
+## License
+
+MIT License - Freedom from lock-in.
 
 ---
 
 <p align="center">
-  <strong>Firebase API. Your Infrastructure.</strong>
+  <strong>Firebase without the lock-in.</strong>
+  <br />
+  Real-time. Edge-native. Open source.
+  <br /><br />
+  <a href="https://firebase.do">Website</a> |
+  <a href="https://docs.firebase.do">Docs</a> |
+  <a href="https://discord.gg/dotdo">Discord</a> |
+  <a href="https://github.com/dotdo/firebase.do">GitHub</a>
 </p>
